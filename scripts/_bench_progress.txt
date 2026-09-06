@@ -1,0 +1,29 @@
+boot pipeline start 1788520810.1
+boot pipeline done 1788520810.1
+reranker _device=cuda initialised=False
+reranker lazy_init done 1788520818.2
+retrieval done in 74.2 s, chunks=24
+  chunk AAPL_txt_aaa17ef70c92_0043 ticker=AAPL t=Part II, Item 7 of the Company’s Annual Report on Form 10-K 
+  chunk AAPL_txt_80c57f8a5e3e_0054 ticker=AAPL t=The Company requires third-party credit support or collatera
+  chunk AAPL_txt_046229ffddd5_0044 ticker=AAPL t=Japan Japan net sales increased during 2025 compared to 2024
+  chunk AAPL_txt_56c48da76831_0045 ticker=AAPL t=Part I, Item 1A of this Form 10-K under the heading “Risk Fa
+  chunk AAPL_txt_fcc5e837b7f7_0052 ticker=AAPL t=Apple Inc. | 2025 Form 10-K | 35 The following table shows d
+  chunk AAPL_txt_eed1764c7773_0018 ticker=AAPL t=Part II, Item 8, “Financial Statements and Supplementary Dat
+  chunk AAPL_txt_dbbabb400a84_0058 ticker=AAPL t=Substantially all of the Company’s hardware products are man
+  chunk AAPL_txt_e4fe19b5883b_0013 ticker=AAPL t=The Company sells its products and resells third-party produ
+  chunk MSFT_txt_c240af50bdad_0078 ticker=MSFT t=PART II Item 7 More Personal Computing Metrics related to ou
+  chunk MSFT_txt_0524742907ad_0082 ticker=MSFT t=PART II Item 7 Fiscal Year 2025 Compared with Fiscal Year 20
+  chunk MSFT_txt_2ec2c80e8e86_0072 ticker=MSFT t=Part II, Item 7, “Management’s Discussion and Analysis of Fi
+  chunk MSFT_txt_cf5f03934713_0136 ticker=MSFT t=PART II Item 8 Revenue, classified by significant product an
+  chunk MSFT_txt_a85f543c7f51_0106 ticker=MSFT t=PART II Item 8 NOTES TO FINANCI AL STATEMENTS NOTE 1 — ACCOU
+  chunk MSFT_txt_fdd241171acf_0077 ticker=MSFT t=Part II, Item 8 of this Form 10-K). Financial metrics are ca
+  chunk MSFT_txt_1b633d58f196_0081 ticker=MSFT t=PART II Item 7 Fiscal Year 2025 Compared with Fiscal Year 20
+  chunk MSFT_txt_2982f6a4d0e5_0079 ticker=MSFT t=PART II Item 7 SEGMENT RESULTS OF OPERATIONS %%TABLE_14%% Re
+  chunk NVDA_tbl_bf56f12bfafa_0059 ticker=NVDA t=NVIDIA Revenue by Reportable Segment (in millions of U.S. do
+  chunk NVDA_txt_88e1cd8ff7f3_0067 ticker=NVDA t=We account for customer programs, which involve rebates and 
+  chunk NVDA_txt_7db195dbc7c3_0104 ticker=NVDA t=Note 6 - Amortizable Intangible Assets The components of our
+  chunk NVDA_txt_0fccf68fd39d_0036 ticker=NVDA t=These challenges have impacted our results of operations and
+  chunk NVDA_txt_ad38bd3d08a6_0095 ticker=NVDA t=The principal considerations for our determination that perf
+  chunk NVDA_txt_23156cab7434_0106 ticker=NVDA t=Approximately 39 % of revenue from contracts greater than on
+  chunk NVDA_txt_73bb5e2ae4d8_0111 ticker=NVDA t=The Graphics segment includes GeForce GPUs for gaming and PC
+  chunk NVDA_txt_e8ce816e8319_0105 ticker=NVDA t=We have certain customers that may purchase products directl

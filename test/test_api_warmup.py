@@ -13,7 +13,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 sys.path.insert(0, str(_PROJECT_ROOT / "src"))
 sys.path.insert(0, str(_PROJECT_ROOT / "src" / "1_ingestion"))
-sys.path.insert(0, str(_PROJECT_ROOT / "src" / "2_generation"))
+sys.path.insert(0, str(_PROJECT_ROOT / "src" / "5_generation"))
 
 from app.api.main import app, _run_warmup
 

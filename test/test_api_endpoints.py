@@ -33,7 +33,7 @@ for _p in (
     str(_PROJECT_ROOT),
     str(_src_root),
     str(_src_root / "1_ingestion"),
-    str(_src_root / "2_generation"),
+    str(_src_root / "5_generation"),
 ):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -64,7 +64,7 @@ def patch_pipeline():
             sources=["AAPL - 2025 - Business Overview - 10"],
             model_dump_json=lambda: '{"answer":"Apple reported $100B in revenue."}',
         ),
-        "model_used": "llama-3.3-70b-versatile",
+        "model_used": "openai/gpt-oss-20b",
         "fallback_triggered": False,
         "ttft_ms": 234.5,
         "cache_hit": False,
@@ -309,7 +309,8 @@ class TestDocumentUpload:
             files={"file": ("save_test.txt", content, "text/plain")},
         )
         assert resp.status_code == 200
-        saved = _PROJECT_ROOT / "data" / "TEST" / "10-K" / "2024" / "save_test.txt"
+        from config.settings import DATA_DIR
+        saved = DATA_DIR / "TEST" / "10-K" / "2024" / "save_test.txt"
         assert saved.exists()
         saved.unlink()  # cleanup
         # Clean up empty dirs

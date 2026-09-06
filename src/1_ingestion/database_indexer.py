@@ -6,6 +6,7 @@ Primary Storage: MongoDB — raw text, markdown, full metadata (chunk_id as PK).
 Vector Storage: Qdrant — 768-dim HNSW vectors with lightweight metadata payload.
 """
 
+import threading
 import time
 import uuid as _uuid
 from typing import Any
@@ -114,6 +115,10 @@ class EmbeddingEngine:
     def __init__(self, model_name: str = "nomic-ai/nomic-embed-text-v1.5"):
         self._model_name = model_name
         self._model: SentenceTransformer | None = None
+        # Serializes access to the shared CUDA SentenceTransformer so concurrent
+        # threads (e.g. parallel per-ticker hybrid searches) never issue
+        # simultaneous inference on the same GPU model.
+        self._encode_lock = threading.Lock()
 
     def _load_model(self) -> SentenceTransformer:
         """Lazy-load the embedding model on first use. Asserts CUDA availability."""
@@ -155,16 +160,17 @@ class EmbeddingEngine:
         """
         model = self._load_model()
         logger.info("Embedding %d texts (batch_size=%d)", len(texts), batch_size)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        embeddings = model.encode(
-            texts,
-            batch_size=batch_size,
-            show_progress_bar=False,
-            normalize_embeddings=True,
-        )
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        with self._encode_lock:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            embeddings = model.encode(
+                texts,
+                batch_size=batch_size,
+                show_progress_bar=False,
+                normalize_embeddings=True,
+            )
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         return embeddings.tolist()
 
     def embed_single(self, text: str) -> list[float]:
@@ -295,6 +301,40 @@ class MongoDBIndexer:
             {"chunk_id": {"$in": chunk_ids}}, {"_id": 0}
         )
         return {doc["chunk_id"]: doc for doc in results}
+
+    def get_chunks_by_filter(
+        self, metadata_filter: dict | None = None, limit: int = 500
+    ) -> list[dict]:
+        """
+        Fetch chunk documents matching a strict metadata pre-filter.
+
+        Used by the hybrid search engine as the BM25 sparse-corpus source so the
+        exact-keyword branch is scoped to the SAME isolated chunk scope as the
+        dense (Qdrant) branch.
+
+        Args:
+            metadata_filter: Dict with any of ticker / fiscal_year / section.
+                Values are matched exactly (fiscal_year is stored as str).
+            limit: Maximum number of chunks to return.
+
+        Returns:
+            List of chunk document dicts (raw_text included for tokenization).
+        """
+        collection = self._connect()
+        query: dict = {}
+        for key in ("fiscal_year", "section"):
+            value = (metadata_filter or {}).get(key)
+            if value is not None and str(value).strip() != "":
+                query[key] = value
+        tickers = (metadata_filter or {}).get("tickers")
+        if tickers and isinstance(tickers, list) and len(tickers) > 1:
+            query["ticker"] = {"$in": tickers}
+        else:
+            ticker_val = (metadata_filter or {}).get("ticker")
+            if ticker_val is not None and str(ticker_val).strip() != "":
+                query["ticker"] = str(ticker_val).strip()
+        results = collection.find(query, {"_id": 0}).limit(max(1, int(limit)))
+        return list(results)
 
     def count_documents(self, ticker: str | None = None) -> int:
         """Count total documents, optionally filtered by ticker."""
@@ -464,36 +504,71 @@ class QdrantIndexer:
     def search(
         self,
         query_embedding: list[float],
-        top_k: int = 5,
+        top_k: int = 3,
         ticker: str | None = None,
         fiscal_year: str | None = None,
+        section: str | None = None,
+        tickers: list[str] | None = None,
     ) -> list[dict]:
         """
         Perform vector similarity search with optional metadata pre-filtering.
 
+        Supports both single-ticker (``ticker``) and multi-ticker OR filtering
+        (``tickers`` list).  When ``tickers`` is provided with more than one
+        element a ``Filter(should=[...])`` OR condition is built so chunks from
+        *any* of the listed tickers match.
+
         Args:
             query_embedding: 768-dim query vector.
             top_k: Number of results to return.
-            ticker: Filter by ticker symbol.
+            ticker: Filter by single ticker symbol.
+            tickers: Filter by multiple tickers (OR logic).
             fiscal_year: Filter by fiscal year.
+            section: Filter by SEC 10-K section (e.g. "Item 7", "Item 1A").
 
         Returns:
             List of search results with scores and payloads.
         """
         client = self._connect()
 
-        # Build metadata filter conditions
-        must_conditions = []
-        if ticker:
-            must_conditions.append(
-                FieldCondition(key="ticker", match=MatchValue(value=ticker))
-            )
-        if fiscal_year:
-            must_conditions.append(
-                FieldCondition(key="fiscal_year", match=MatchValue(value=fiscal_year))
-            )
-
-        query_filter = Filter(must=must_conditions) if must_conditions else None
+        # --- Multi-ticker OR filtering -------------------------------------------
+        if tickers and len(tickers) > 1:
+            ticker_conditions = [
+                FieldCondition(key="ticker", match=MatchValue(value=t.upper()))
+                for t in tickers
+            ]
+            other_conditions = []
+            if fiscal_year:
+                other_conditions.append(
+                    FieldCondition(key="fiscal_year", match=MatchValue(value=fiscal_year))
+                )
+            if section:
+                other_conditions.append(
+                    FieldCondition(key="section", match=MatchValue(value=section))
+                )
+            if other_conditions:
+                query_filter = Filter(must=other_conditions, should=ticker_conditions)
+            else:
+                query_filter = Filter(should=ticker_conditions)
+        else:
+            # --- Legacy single-ticker / no-ticker filtering ---------------------
+            must_conditions = []
+            effective_ticker = ticker
+            if tickers and len(tickers) == 1:
+                effective_ticker = tickers[0]
+            if effective_ticker:
+                must_conditions.append(
+                    FieldCondition(key="ticker", match=MatchValue(value=effective_ticker))
+                )
+            if fiscal_year:
+                must_conditions.append(
+                    FieldCondition(key="fiscal_year", match=MatchValue(value=fiscal_year))
+                )
+            if section:
+                must_conditions.append(
+                    FieldCondition(key="section", match=MatchValue(value=section))
+                )
+            query_filter = Filter(must=must_conditions) if must_conditions else None
 
         response = client.query_points(
             collection_name=self._collection_name,
@@ -606,7 +681,7 @@ class DualStorageIndexer:
     def search_similar(
         self,
         query_text: str,
-        top_k: int = 5,
+        top_k: int = 3,
         ticker: str | None = None,
         fiscal_year: str | None = None,
     ) -> list[dict]:

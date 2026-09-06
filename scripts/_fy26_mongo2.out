@@ -1,0 +1,50 @@
+mongo docs matching source_file: 1
+ALL KEYS: ['_id', 'chunk_id', 'chunk_type', 'contains_table', 'doc_type', 'fiscal_year', 'page_number', 'raw_text', 'section', 'source_file', 'ticker', 'token_count']
+chunk_id: NVDA_txt_4e2da079297d_0000
+ticker: NVDA
+fiscal_year: 'UNKNOWN'
+doc_type: 10-K
+section: General
+contains_table: False
+chunk_type: text
+raw_text len: 2154
+=== RAW_TEXT (full) ===
+NVIDIA Corporation (NVDA)
+FY2026 Special Supplement: Data Center & AI Infrastructure Performance
+Ticker Symbol: NVDA (NASDAQ) Fiscal Year: FY2026 Q2 Supplement
+Document Type: SEC Form 10-K Excerpt Reporting
+Currency: USD ($ Millions)
+1. Executive Financial Summary
+During fiscal year 2026, NVIDIA Corporation experienced unprecedented growth in its Compute & Networking
+segment, driven primarily by enterprise adoption of Blackwell architecture processors and expanded cloud
+provider deployments. Total net sales reached record highs, with Data Center operations accounting for 87%
+of total consolidated revenue. 
+Key Milestone: Data Center quarterly revenue exceeded $34,800 million in Q2 FY2026, representing a 112% year-
+over-year growth compared to Q2 FY2025. 
+2. Segment Revenue & Margins Breakdown
+Business Segment FY2025 Revenue
+($M)
+FY2026 Revenue
+($M)
+YoY Growth
+(%)
+Gross Margin
+(%)
+Data Center (Compute &
+Networking) $47,525 $108,400 +128.1% 76.2%
+Gaming & Client PCs $10,447 $12,150 +16.3% 62.8%
+Professional Visualization$1,553 $1,890 +21.7% 68.5%
+Automotive & Robotics $1,091 $1,620 +48.5% 58.1%
+Total Consolidated Revenue$60,616 $124,060 +104.7% 74.5%
+3. Research & Development (R&D) Expenditures
+Research and development expenses for FY2026 totaled $14,250 million, compared to $8,675 million in
+FY2025. The 64.3% increase was principally driven by employee compensation costs, advanced tape-outs for
+the upcoming Rubin GPU platform, and high-bandwidth memory (HBM3e/HBM4) integration research. R&D
+expenditure represented approximately 11.5% of total revenue. 
+4. Operational Risks & Supply Chain Dynamics
+Our reliance on third-party semiconductor foundries, primarily Taiwan Semiconductor Manufacturing
+Company (TSMC), represents a concentration of manufacturing risk. Advanced packaging capacity (CoWoS)
+remains the primary bottleneck for Blackwell Ultra B200 shipments. Additionally, regulatory compliance
+regarding export controls to specific geographic regions continues to impact potential market capture in Asia-
+Pacific markets. 
+NVIDIA Corporation | SEC Filing Supplemental Material | Generated for FinSight AI Ingestion Testing

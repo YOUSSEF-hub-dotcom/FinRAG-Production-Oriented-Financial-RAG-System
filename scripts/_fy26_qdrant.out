@@ -1,0 +1,6 @@
+collections: ['financial_vectors']
+collection points count: 1147
+points found for NVDA_txt_4e2da079297d_0000: 1
+point id: 2f3e64ef-e979-52e8-8352-b09389293977
+payload: {'chunk_id': 'NVDA_txt_4e2da079297d_0000', 'ticker': 'NVDA', 'fiscal_year': 'UNKNOWN', 'section': 'General', 'doc_type': '10-K', 'contains_table': False}
+vector dim: 768 sample: [0.01522708311676979, 0.09667414426803589, -0.18369092047214508, -0.0315677709877491, 0.0030816104263067245]

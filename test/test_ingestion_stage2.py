@@ -3,7 +3,7 @@ Verification tests for Ingestion Stage 2: Hybrid Chunking & Dual-Storage Indexin
 
 Tests cover:
   - Table atomic preservation (no table split into half chunks)
-  - Token size constraints (strictly <= 768 tokens per chunk)
+  - Token size constraints (strictly <= CHUNK_MAX_TOKENS per chunk)
   - Section boundary detection and chunk metadata
   - Embedding engine dimension validation
   - Dual-storage insertion (in-memory Qdrant + mocked MongoDB)
@@ -28,6 +28,8 @@ from hybrid_chunker import (
     _recursive_token_split,
     _get_token_encoder,
 )
+
+from config.settings import CHUNK_MAX_TOKENS
 from database_indexer import (
     EmbeddingEngine,
     DualStorageIndexer,
@@ -126,7 +128,7 @@ def test_table_atomic_preservation():
 
 
 def test_token_size_constraint():
-    """Verify all text chunks are strictly <= 768 tokens."""
+    """Verify all text chunks are strictly <= CHUNK_MAX_TOKENS tokens."""
     metadata = extract_metadata(
         file_path="data/AAPL/10-K/0000320193-25-000079/full-submission.txt",
         chunk_text=SAMPLE_LONG_TEXT,
@@ -143,8 +145,8 @@ def test_token_size_constraint():
     max_observed = 0
     for chunk in chunks:
         actual_tokens = count_tokens(chunk["text"], encoder)
-        assert actual_tokens <= 768, (
-            f"Chunk {chunk['chunk_id']} has {actual_tokens} tokens (max=768)"
+        assert actual_tokens <= CHUNK_MAX_TOKENS, (
+            f"Chunk {chunk['chunk_id']} has {actual_tokens} tokens (max={CHUNK_MAX_TOKENS})"
         )
         max_observed = max(max_observed, actual_tokens)
 

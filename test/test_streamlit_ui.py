@@ -87,7 +87,7 @@ class TestSendQuery:
             "answer": "Apple's revenue was $100B.",
             "sources": [{"ticker": "AAPL", "score": 0.95, "fiscal_year": "2025", "section": "Item 7: MD&A", "text_snippet": "Revenue $100B."}],
             "execution_time_ms": 1234.56,
-            "model_used": "llama-3.3-70b-versatile",
+            "model_used": "openai/gpt-oss-20b",
             "cache_hit": False,
         }
 
@@ -100,7 +100,7 @@ class TestSendQuery:
             )
 
         assert result["answer"] == "Apple's revenue was $100B."
-        assert result["model_used"] == "llama-3.3-70b-versatile"
+        assert result["model_used"] == "openai/gpt-oss-20b"
         assert result["cache_hit"] is False
         assert len(result["sources"]) == 1
 

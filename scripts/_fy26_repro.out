@@ -1,0 +1,236 @@
+{"timestamp": "2026-09-05T17:34:52.668339+00:00", "level": "INFO", "logger": "model_loader", "module": "model_loader", "function": "load_production_pipeline", "line": 125, "message": "Attempting MLflow Production model fetch: models:/financial_rag_pipeline@Production"}
+INFO model_loader: Attempting MLflow Production model fetch: models:/financial_rag_pipeline@Production
+{"timestamp": "2026-09-05T16:35:29.785260+00:00", "level": "INFO", "logger": "model_loader", "module": "model_loader", "function": "_load_production_config", "line": 78, "message": "Found Production model: financial_rag_pipeline version=7 (run=defa3d5a15d54db69218e14df265655b)"}
+INFO model_loader: Found Production model: financial_rag_pipeline version=7 (run=defa3d5a15d54db69218e14df265655b)
+Downloading artifacts:   0%|          | 0/1 [00:00<?, ?it/s]Downloading artifacts:   0%|          | 0/1 [00:00<?, ?it/s]
+Downloading artifacts:   0%|          | 0/1 [00:00<?, ?it/s]Downloading artifacts:   0%|          | 0/1 [00:00<?, ?it/s]
+{"timestamp": "2026-09-05T16:35:30.000302+00:00", "level": "WARNING", "logger": "model_loader", "module": "model_loader", "function": "_load_production_config", "line": 91, "message": "Could not load Production config from registry: Failed to download artifacts from path 'config.json', please ensure that the path is correct."}
+WARNING model_loader: Could not load Production config from registry: Failed to download artifacts from path 'config.json', please ensure that the path is correct.
+{"timestamp": "2026-09-05T16:35:30.000703+00:00", "level": "INFO", "logger": "model_loader", "module": "model_loader", "function": "load_production_pipeline", "line": 129, "message": "No Production model found \u2014 falling back to direct init"}
+INFO model_loader: No Production model found — falling back to direct init
+{"timestamp": "2026-09-05T16:35:30.000986+00:00", "level": "INFO", "logger": "model_loader", "module": "model_loader", "function": "get_or_create_pipeline", "line": 183, "message": "Falling back to direct FinancialRAGPipeline instantiation"}
+INFO model_loader: Falling back to direct FinancialRAGPipeline instantiation
+{"timestamp": "2026-09-05T16:35:48.089031+00:00", "level": "INFO", "logger": "retrieval.hybrid_search", "module": "hybrid_search", "function": "__init__", "line": 132, "message": "HybridSearchEngine ready: top_k=40 candidate_k=40 rrf_k=60 dense_w=1.00 sparse_w=1.00 corpus_limit=500"}
+INFO retrieval.hybrid_search: HybridSearchEngine ready: top_k=40 candidate_k=40 rrf_k=60 dense_w=1.00 sparse_w=1.00 corpus_limit=500
+{"timestamp": "2026-09-05T16:35:48.089446+00:00", "level": "INFO", "logger": "retrieval.table_shield", "module": "table_shield", "function": "__init__", "line": 101, "message": "TableShield configured: model=openai/gpt-oss-120b temp=0.00 max_tokens=512 concurrency=5 clean_enabled=False"}
+INFO retrieval.table_shield: TableShield configured: model=openai/gpt-oss-120b temp=0.00 max_tokens=512 concurrency=5 clean_enabled=False
+{"timestamp": "2026-09-05T16:35:48.089591+00:00", "level": "INFO", "logger": "retrieval.reranker", "module": "reranker", "function": "__init__", "line": 87, "message": "CrossEncoderReranker configured: model=BAAI/bge-reranker-large device=cuda top_n=8 batch_size=32 dtype=float16"}
+INFO retrieval.reranker: CrossEncoderReranker configured: model=BAAI/bge-reranker-large device=cuda top_n=8 batch_size=32 dtype=float16
+{"timestamp": "2026-09-05T16:35:48.089710+00:00", "level": "INFO", "logger": "retrieval.post_retrieval", "module": "post_retrieval", "function": "__init__", "line": 72, "message": "PostRetrievalPipeline ready: input=40 top_n=8 pattern=None"}
+INFO retrieval.post_retrieval: PostRetrievalPipeline ready: input=40 top_n=8 pattern=None
+{"timestamp": "2026-09-05T16:35:48.090296+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "__init__", "line": 451, "message": "Post-retrieval enabled: hybrid search at top_k=40 (rerank -> table shield -> cylinder reorder)"}
+INFO pipeline.orchestrator: Post-retrieval enabled: hybrid search at top_k=40 (rerank -> table shield -> cylinder reorder)
+{"timestamp": "2026-09-05T16:35:48.090601+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "__init__", "line": 465, "message": "FinancialRAGPipeline initialized: primary=openai/gpt-oss-120b fallback=openai/gpt-oss-20b top_k=3 cache=True guardrail=True pre_retrieval=False hybrid_retrieval=True             post_retrieval=True"}
+INFO pipeline.orchestrator: FinancialRAGPipeline initialized: primary=openai/gpt-oss-120b fallback=openai/gpt-oss-20b top_k=3 cache=True guardrail=True pre_retrieval=False hybrid_retrieval=True             post_retrieval=True
+=== _query_fiscal_year(QUERY) [sync path] === '2026'
+
+>>> RUNNING query_stream(ticker='NVDA', fiscal_year=None) ...
+
+{"timestamp": "2026-09-05T16:35:48.092909+00:00", "level": "INFO", "logger": "retrieval.hybrid_search", "module": "hybrid_search", "function": "asearch", "line": 198, "message": "Hybrid search start: queries=1 filter={'ticker': 'NVDA'} qdrant_pre_filter=active"}
+INFO retrieval.hybrid_search: Hybrid search start: queries=1 filter={'ticker': 'NVDA'} qdrant_pre_filter=active
+{"timestamp": "2026-09-05T16:35:48.113839+00:00", "level": "INFO", "logger": "ingestion.indexer", "module": "database_indexer", "function": "_connect", "line": 218, "message": "Connected to MongoDB: mongodb://localhost:27017/financial_rag.raw_chunks"}
+INFO ingestion.indexer: Connected to MongoDB: mongodb://localhost:27017/financial_rag.raw_chunks
+{"timestamp": "2026-09-05T16:35:48.305503+00:00", "level": "INFO", "logger": "retrieval.hybrid_search", "module": "hybrid_search", "function": "asearch", "line": 217, "message": "Pre-filtered BM25 corpus: 364 chunks"}
+INFO retrieval.hybrid_search: Pre-filtered BM25 corpus: 364 chunks
+{"timestamp": "2026-09-05T16:35:48.567605+00:00", "level": "INFO", "logger": "ingestion.indexer", "module": "database_indexer", "function": "_load_model", "line": 131, "message": "Loading embedding model nomic-ai/nomic-embed-text-v1.5 on device=cuda (GPU: NVIDIA GeForce RTX 4050 Laptop GPU)"}
+INFO ingestion.indexer: Loading embedding model nomic-ai/nomic-embed-text-v1.5 on device=cuda (GPU: NVIDIA GeForce RTX 4050 Laptop GPU)
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+WARNING huggingface_hub.utils._http: Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/nomic-ai/nomic-embed-text-v1.5/e9b6763023c676ca8431644204f50c2b100d9aab/modules.json "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/nomic-ai/nomic-embed-text-v1.5/e9b6763023c676ca8431644204f50c2b100d9aab/config_sentence_transformers.json "HTTP/1.1 200 OK"
+INFO sentence_transformers.base.model: Loading SentenceTransformer model from nomic-ai/nomic-embed-text-v1.5.
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/nomic-ai/nomic-embed-text-v1.5/e9b6763023c676ca8431644204f50c2b100d9aab/config_sentence_transformers.json "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/nomic-ai/nomic-embed-text-v1.5/e9b6763023c676ca8431644204f50c2b100d9aab/README.md "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/nomic-ai/nomic-embed-text-v1.5/e9b6763023c676ca8431644204f50c2b100d9aab/modules.json "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/sentence_bert_config.json "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/nomic-ai/nomic-embed-text-v1.5/e9b6763023c676ca8431644204f50c2b100d9aab/sentence_bert_config.json "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/adapter_config.json "HTTP/1.1 404 Not Found"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/nomic-ai/nomic-embed-text-v1.5/e9b6763023c676ca8431644204f50c2b100d9aab/config.json "HTTP/1.1 200 OK"
+Loading weights:   0%|          | 0/112 [00:00<?, ?it/s]Loading weights:  12%|█▏        | 13/112 [00:00<00:00, 102.17it/s]Loading weights:  21%|██▏       | 24/112 [00:00<00:01, 58.31it/s] Loading weights:  37%|███▋      | 41/112 [00:00<00:00, 87.70it/s]Loading weights:  49%|████▉     | 55/112 [00:00<00:00, 97.17it/s]Loading weights:  66%|██████▌   | 74/112 [00:00<00:00, 120.68it/s]Loading weights:  85%|████████▍ | 95/112 [00:00<00:00, 145.64it/s]Loading weights: 100%|██████████| 112/112 [00:00<00:00, 135.54it/s]
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/processor_config.json "HTTP/1.1 404 Not Found"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/video_preprocessor_config.json "HTTP/1.1 404 Not Found"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/nomic-ai/nomic-embed-text-v1.5/e9b6763023c676ca8431644204f50c2b100d9aab/tokenizer_config.json "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/nomic-ai/nomic-embed-text-v1.5/e9b6763023c676ca8431644204f50c2b100d9aab/config.json "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/nomic-ai/nomic-embed-text-v1.5/e9b6763023c676ca8431644204f50c2b100d9aab/config.json "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/nomic-ai/nomic-embed-text-v1.5/e9b6763023c676ca8431644204f50c2b100d9aab/tokenizer_config.json "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: GET https://huggingface.co/api/models/nomic-ai/nomic-embed-text-v1.5/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+INFO httpx: HTTP Request: GET https://huggingface.co/api/models/nomic-ai/nomic-embed-text-v1.5/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/1_Pooling/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/nomic-ai/nomic-embed-text-v1.5/e9b6763023c676ca8431644204f50c2b100d9aab/1_Pooling%2Fconfig.json "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: GET https://huggingface.co/api/models/nomic-ai/nomic-embed-text-v1.5 "HTTP/1.1 200 OK"
+{"timestamp": "2026-09-05T16:35:54.869936+00:00", "level": "INFO", "logger": "ingestion.indexer", "module": "database_indexer", "function": "_load_model", "line": 142, "message": "Model loaded -- dim=768, device=cuda, GPU=NVIDIA GeForce RTX 4050 Laptop GPU"}
+INFO ingestion.indexer: Model loaded -- dim=768, device=cuda, GPU=NVIDIA GeForce RTX 4050 Laptop GPU
+{"timestamp": "2026-09-05T16:35:54.871848+00:00", "level": "INFO", "logger": "ingestion.indexer", "module": "database_indexer", "function": "embed", "line": 162, "message": "Embedding 1 texts (batch_size=32)"}
+INFO ingestion.indexer: Embedding 1 texts (batch_size=32)
+{"timestamp": "2026-09-05T16:35:58.016948+00:00", "level": "WARNING", "logger": "ingestion.indexer", "module": "database_indexer", "function": "_connect", "line": 399, "message": "Qdrant connection attempt 1/3 failed: Storage folder /home/youssef/Financial_RAG/data/qdrant_db is already accessed by another instance of Qdrant client. If you require concurrent access, use Qdrant server instead."}
+WARNING ingestion.indexer: Qdrant connection attempt 1/3 failed: Storage folder /home/youssef/Financial_RAG/data/qdrant_db is already accessed by another instance of Qdrant client. If you require concurrent access, use Qdrant server instead.
+{"timestamp": "2026-09-05T16:36:00.285967+00:00", "level": "WARNING", "logger": "ingestion.indexer", "module": "database_indexer", "function": "_connect", "line": 399, "message": "Qdrant connection attempt 2/3 failed: Storage folder /home/youssef/Financial_RAG/data/qdrant_db is already accessed by another instance of Qdrant client. If you require concurrent access, use Qdrant server instead."}
+WARNING ingestion.indexer: Qdrant connection attempt 2/3 failed: Storage folder /home/youssef/Financial_RAG/data/qdrant_db is already accessed by another instance of Qdrant client. If you require concurrent access, use Qdrant server instead.
+{"timestamp": "2026-09-05T16:36:02.517568+00:00", "level": "WARNING", "logger": "ingestion.indexer", "module": "database_indexer", "function": "_connect", "line": 399, "message": "Qdrant connection attempt 3/3 failed: Storage folder /home/youssef/Financial_RAG/data/qdrant_db is already accessed by another instance of Qdrant client. If you require concurrent access, use Qdrant server instead."}
+WARNING ingestion.indexer: Qdrant connection attempt 3/3 failed: Storage folder /home/youssef/Financial_RAG/data/qdrant_db is already accessed by another instance of Qdrant client. If you require concurrent access, use Qdrant server instead.
+{"timestamp": "2026-09-05T16:36:02.519058+00:00", "level": "ERROR", "logger": "retrieval.hybrid_search", "module": "hybrid_search", "function": "_dense_search", "line": 426, "message": "Dense (Qdrant) search failed: Failed to connect to Qdrant after 3 attempts"}
+ERROR retrieval.hybrid_search: Dense (Qdrant) search failed: Failed to connect to Qdrant after 3 attempts
+{"timestamp": "2026-09-05T16:36:02.621522+00:00", "level": "INFO", "logger": "retrieval.hybrid_search", "module": "hybrid_search", "function": "_rescue_table_chunks", "line": 568, "message": "Table/segment rescue: boosted chunk NVDA_tbl_bf56f12bfafa_0059 (bm25=20.680)"}
+INFO retrieval.hybrid_search: Table/segment rescue: boosted chunk NVDA_tbl_bf56f12bfafa_0059 (bm25=20.680)
+{"timestamp": "2026-09-05T16:36:02.623126+00:00", "level": "INFO", "logger": "retrieval.hybrid_search", "module": "hybrid_search", "function": "asearch", "line": 254, "message": "RRF fused 41 unique candidates -> top 40 chunk ids"}
+INFO retrieval.hybrid_search: RRF fused 41 unique candidates -> top 40 chunk ids
+{"timestamp": "2026-09-05T16:36:02.672581+00:00", "level": "INFO", "logger": "retrieval.hybrid_search", "module": "hybrid_search", "function": "asearch", "line": 290, "message": "Hybrid search complete: 40 chunks returned"}
+INFO retrieval.hybrid_search: Hybrid search complete: 40 chunks returned
+
+=== STAGE A: HYBRID SEARCH OUTPUT (40 docs) ===
+  NVDA_tbl_bf56f12bfafa_0059 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.5 dense=None sparse=None rescued=True
+  NVDA_txt_4e2da079297d_0000 ticker=NVDA fy=UNKNOWN src=structure_Expansion_FY2026.pdf rrf=0.016393 dense=None sparse=49.60968715763597 rescued=False  <<<< NEW CHUNK
+  NVDA_txt_88e1cd8ff7f3_0067 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.016129 dense=None sparse=35.01539325971786 rescued=False
+  NVDA_txt_628a1f74dc24_0066 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.015873 dense=None sparse=34.18513958664703 rescued=False
+  NVDA_txt_d1bb4244ce5c_0013 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.015625 dense=None sparse=31.42021355483298 rescued=False
+  NVDA_txt_3299be2c80f6_0063 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.015385 dense=None sparse=30.273696580202166 rescued=False
+  NVDA_txt_ea0a74c9ae31_0064 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.015152 dense=None sparse=28.565084769141126 rescued=False
+  NVDA_txt_e95732b431b4_0008 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.014925 dense=None sparse=28.563284724234993 rescued=False
+  NVDA_txt_e3bdf50cf8ed_0008 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.014706 dense=None sparse=28.563284724234993 rescued=False
+  NVDA_txt_8cb3bfd9da02_0013 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.014493 dense=None sparse=28.439014675318518 rescued=False
+  NVDA_txt_e456f074419b_0065 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.014286 dense=None sparse=28.256454509357678 rescued=False
+  NVDA_txt_8eeb2ffd70ae_0068 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.014085 dense=None sparse=27.91601017567498 rescued=False
+  NVDA_txt_01d306656348_0023 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.013889 dense=None sparse=27.4896609520704 rescued=False
+  NVDA_txt_92a76750c9bb_0062 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.013699 dense=None sparse=26.772301160084652 rescued=False
+  NVDA_txt_d395ac36dd1d_0009 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.013514 dense=None sparse=26.36488402534619 rescued=False
+  NVDA_txt_6ea71f05448d_0009 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.013333 dense=None sparse=26.20883667188573 rescued=False
+  NVDA_txt_2410bdf177fd_0022 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.013158 dense=None sparse=25.636930997394824 rescued=False
+  NVDA_txt_eb95c57234f3_0011 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.012987 dense=None sparse=25.526754418346716 rescued=False
+  NVDA_txt_b21078d8d8ea_0068 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.012821 dense=None sparse=24.94667176507362 rescued=False
+  NVDA_txt_d0cd25518013_0011 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.012658 dense=None sparse=24.926580082628814 rescued=False
+  NVDA_txt_ded38a054597_0112 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.0125 dense=None sparse=24.81226821222754 rescued=False
+  NVDA_txt_7cd4687c9925_0067 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.012346 dense=None sparse=24.337983591090172 rescued=False
+  NVDA_txt_665cf01a6fce_0096 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.012195 dense=None sparse=24.29718900497579 rescued=False
+  NVDA_txt_332015ad243a_0012 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.012048 dense=None sparse=24.100200900066838 rescued=False
+  NVDA_txt_31216a715583_0103 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.011905 dense=None sparse=24.038274433099332 rescued=False
+  NVDA_txt_32f59ef92173_0069 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.011765 dense=None sparse=23.815327977217674 rescued=False
+  NVDA_txt_3c10a7b2a928_0106 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.011628 dense=None sparse=23.58065592433874 rescued=False
+  NVDA_txt_73bb5e2ae4d8_0111 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.011494 dense=None sparse=23.477657914334063 rescued=False
+  NVDA_txt_88335e78fe7a_0103 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.011364 dense=None sparse=23.38131259704311 rescued=False
+  NVDA_txt_dce4799ab4a8_0027 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.011236 dense=None sparse=23.241109014639612 rescued=False
+  NVDA_txt_8e225c7e53b2_0064 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.011111 dense=None sparse=23.228751239561205 rescued=False
+  NVDA_txt_bd713ebecc77_0012 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.010989 dense=None sparse=23.08180131700901 rescued=False
+  NVDA_txt_3e4b8b9c9abf_0076 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.01087 dense=None sparse=23.016577880889784 rescued=False
+  NVDA_txt_e8ce816e8319_0105 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.010753 dense=None sparse=22.98415788844905 rescued=False
+  NVDA_txt_55837e7ef992_0021 ticker=NVDA fy=2026 src=full-submission.txt rrf=0.010638 dense=None sparse=22.977291895134293 rescued=False
+  NVDA_txt_b470fdd0e6e3_0076 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.010526 dense=None sparse=22.88900842156545 rescued=False
+  NVDA_txt_f8a990a144ae_0028 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.010417 dense=None sparse=22.450299627280042 rescued=False
+  NVDA_txt_ad38bd3d08a6_0095 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.010309 dense=None sparse=22.284896255314127 rescued=False
+  NVDA_txt_9ae6ce184fcf_0066 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.010204 dense=None sparse=21.987885161320605 rescued=False
+  NVDA_txt_23156cab7434_0106 ticker=NVDA fy=2025 src=full-submission.txt rrf=0.010101 dense=None sparse=21.19831349537359 rescued=False
+INFO httpx: HTTP Request: HEAD https://huggingface.co/BAAI/bge-reranker-large/resolve/main/modules.json "HTTP/1.1 404 Not Found"
+INFO sentence_transformers.base.model: No modules.json found for BAAI/bge-reranker-large, initializing a new CrossEncoder model.
+INFO httpx: HTTP Request: GET https://huggingface.co/api/models/BAAI/bge-reranker-large "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/BAAI/bge-reranker-large/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/BAAI/bge-reranker-large/55611d7bca2a7133960a6d3b71e083071bbfc312/config.json "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/BAAI/bge-reranker-large/resolve/main/adapter_config.json "HTTP/1.1 404 Not Found"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/BAAI/bge-reranker-large/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/BAAI/bge-reranker-large/55611d7bca2a7133960a6d3b71e083071bbfc312/config.json "HTTP/1.1 200 OK"
+Loading weights:   0%|          | 0/393 [00:00<?, ?it/s]Loading weights:   2%|▏         | 9/393 [00:02<01:43,  3.71it/s]Loading weights:  38%|███▊      | 150/393 [00:02<00:02, 81.63it/s]Loading weights:  58%|█████▊    | 227/393 [00:02<00:01, 113.70it/s]Loading weights:  71%|███████   | 280/393 [00:03<00:01, 108.28it/s]Loading weights:  80%|████████  | 316/393 [00:03<00:00, 112.80it/s]Loading weights:  88%|████████▊ | 344/393 [00:03<00:00, 120.88it/s]Loading weights:  94%|█████████▎| 368/393 [00:03<00:00, 127.98it/s]Loading weights:  99%|█████████▉| 390/393 [00:04<00:00, 97.21it/s] Loading weights: 100%|██████████| 393/393 [00:04<00:00, 88.51it/s]
+INFO httpx: HTTP Request: HEAD https://huggingface.co/BAAI/bge-reranker-large/resolve/main/processor_config.json "HTTP/1.1 404 Not Found"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/BAAI/bge-reranker-large/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/BAAI/bge-reranker-large/resolve/main/video_preprocessor_config.json "HTTP/1.1 404 Not Found"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/BAAI/bge-reranker-large/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/BAAI/bge-reranker-large/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/BAAI/bge-reranker-large/55611d7bca2a7133960a6d3b71e083071bbfc312/tokenizer_config.json "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/BAAI/bge-reranker-large/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/BAAI/bge-reranker-large/55611d7bca2a7133960a6d3b71e083071bbfc312/config.json "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/BAAI/bge-reranker-large/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/BAAI/bge-reranker-large/55611d7bca2a7133960a6d3b71e083071bbfc312/config.json "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/BAAI/bge-reranker-large/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+INFO httpx: HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/BAAI/bge-reranker-large/55611d7bca2a7133960a6d3b71e083071bbfc312/tokenizer_config.json "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: GET https://huggingface.co/api/models/BAAI/bge-reranker-large/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+INFO httpx: HTTP Request: GET https://huggingface.co/api/models/BAAI/bge-reranker-large/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+INFO httpx: HTTP Request: GET https://huggingface.co/api/models/BAAI/bge-reranker-large "HTTP/1.1 200 OK"
+{"timestamp": "2026-09-05T16:36:17.385276+00:00", "level": "INFO", "logger": "retrieval.reranker", "module": "reranker", "function": "_lazy_init", "line": 154, "message": "Reranker loaded: model=BAAI/bge-reranker-large device=cuda:0 dtype=float16"}
+INFO retrieval.reranker: Reranker loaded: model=BAAI/bge-reranker-large device=cuda:0 dtype=float16
+{"timestamp": "2026-09-05T16:36:17.390390+00:00", "level": "INFO", "logger": "retrieval.reranker", "module": "reranker", "function": "_lazy_init", "line": 166, "message": "CrossEncoder model loaded: BAAI/bge-reranker-large on cuda"}
+INFO retrieval.reranker: CrossEncoder model loaded: BAAI/bge-reranker-large on cuda
+DEBUG retrieval.reranker: Reranking 40 chunks for query: According to the newly uploaded supplemental filing, what was NVIDIA's Data Cent
+{"timestamp": "2026-09-05T16:36:19.644726+00:00", "level": "INFO", "logger": "retrieval.reranker", "module": "reranker", "function": "rerank_with_scores", "line": 264, "message": "Rerank complete: 40 -> 8 chunks, top_score=0.9990"}
+INFO retrieval.reranker: Rerank complete: 40 -> 8 chunks, top_score=0.9990
+{"timestamp": "2026-09-05T16:36:19.645138+00:00", "level": "INFO", "logger": "retrieval.table_shield", "module": "table_shield", "function": "shield", "line": 217, "message": "TableShield processing: 1 tables (passthrough), 8 non-tables (async clean)"}
+INFO retrieval.table_shield: TableShield processing: 1 tables (passthrough), 8 non-tables (async clean)
+{"timestamp": "2026-09-05T16:36:19.645312+00:00", "level": "INFO", "logger": "retrieval.table_shield", "module": "table_shield", "function": "shield", "line": 269, "message": "TableShield complete: 9 chunks returned"}
+INFO retrieval.table_shield: TableShield complete: 9 chunks returned
+{"timestamp": "2026-09-05T16:36:19.645476+00:00", "level": "INFO", "logger": "retrieval.cylinder_reorder", "module": "cylinder_reorder", "function": "cylinder_reorder", "line": 99, "message": "Cylinder reorder applied (n=9): original_scores=[0.5, 0.999, 0.936, 0.9351, 0.6602, 0.2051, 0.1472, 0.1404, 0.0959] -> reordered_scores=[0.5, 0.936, 0.6602, 0.1472, 0.0959, 0.1404, 0.2051, 0.9351, 0.999]"}
+INFO retrieval.cylinder_reorder: Cylinder reorder applied (n=9): original_scores=[0.5, 0.999, 0.936, 0.9351, 0.6602, 0.2051, 0.1472, 0.1404, 0.0959] -> reordered_scores=[0.5, 0.936, 0.6602, 0.1472, 0.0959, 0.1404, 0.2051, 0.9351, 0.999]
+{"timestamp": "2026-09-05T16:36:19.645633+00:00", "level": "INFO", "logger": "retrieval.post_retrieval", "module": "post_retrieval", "function": "_postprocess", "line": 173, "message": "Post-retrieval complete: 40 chunks in -> 9 chunks out"}
+INFO retrieval.post_retrieval: Post-retrieval complete: 40 chunks in -> 9 chunks out
+
+=== STAGE B: POST-RETRIEVAL (rerank->top8->shield->cylinder) ===
+  out=NVDA_tbl_bf56f12bfafa_0059 fy=2025 score=None src=full-submission.txt
+  out=NVDA_txt_92a76750c9bb_0062 fy=2026 score=None src=full-submission.txt
+  out=NVDA_txt_3c10a7b2a928_0106 fy=2026 score=None src=full-submission.txt
+  out=NVDA_txt_ded38a054597_0112 fy=2026 score=None src=full-submission.txt
+  out=NVDA_txt_8cb3bfd9da02_0013 fy=2026 score=None src=full-submission.txt
+  out=NVDA_txt_e456f074419b_0065 fy=2025 score=None src=full-submission.txt
+  out=NVDA_txt_55837e7ef992_0021 fy=2026 score=None src=full-submission.txt
+  out=NVDA_txt_ea0a74c9ae31_0064 fy=2026 score=None src=full-submission.txt
+  out=NVDA_txt_4e2da079297d_0000 fy=UNKNOWN score=None src=structure_Expansion_FY2026.pdf  <<<< NEW CHUNK
+{"timestamp": "2026-09-05T16:36:19.660636+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "_resolve_table_placeholders", "line": 758, "message": "Table placeholder resolution: 0/9 documents carried placeholders"}
+INFO pipeline.orchestrator: Table placeholder resolution: 0/9 documents carried placeholders
+{"timestamp": "2026-09-05T17:35:42.717849+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "_augment_context", "line": 1518, "message": "Context prepared: 7 documents, 9042 chars (budget=12000)"}
+INFO pipeline.orchestrator: Context prepared: 7 documents, 9042 chars (budget=12000)
+
+=== STAGE C: AUGMENT CONTEXT (7 docs out) ===
+  [ctx] chunk_id=NVDA_tbl_91c7ded32187_0020 ticker=NVDA fy=2026 section=Item 9A. Our responsibility is to express opinions on the Company’s consolidated src=full-submission.txt
+      text_len=909 text_head='Year Ended Jan 25, 2026 | Jan 26, 2025 | Jan 28, 2024 Revenue | $ | 215938 | $ | 130497 | $ | 60922 Cost of revenue | 62475 | 32639 | 16621 Gross profit | 15346'
+  [ctx] chunk_id=NVDA_tbl_bf56f12bfafa_0059 ticker=NVDA fy=2025 section=Part IV src=full-submission.txt
+      text_len=1151 text_head='| Unnamed: 0 | Unnamed: 1 | Unnamed: 2 | Unnamed: 3 | Unnamed: 4 | Unnamed: 5 | Unnamed: 6 | Unnamed: 7 | Unnamed: 8 | Unnamed: 9 | Unnamed: 10 | Unnamed: 11 | '
+  [ctx] chunk_id=NVDA_txt_3c10a7b2a928_0106 ticker=NVDA fy=2026 section=Item 9A. Our responsibility is to express opinions on the Company’s consolidated src=full-submission.txt
+      text_len=1019 text_head='| Unnamed: 0 | Unnamed: 1 | Unnamed: 2 | Unnamed: 3 | Unnamed: 4 | Unnamed: 5 | Unnamed: 6 | Unnamed: 7 | Unnamed: 8 | Unnamed: 9 | Unnamed: 10 | Unnamed: 11 | '
+  [ctx] chunk_id=NVDA_txt_8cb3bfd9da02_0013 ticker=NVDA fy=2026 section=Item 1. Business Our Company NVIDIA pioneered accelerated computing to help solv src=full-submission.txt
+      text_len=1500 text_head='Our platforms address four large markets where our expertise is critical: Data Center, Gaming, Professional Visualization, and Automotive. Data Center The NVIDI'
+  [ctx] chunk_id=NVDA_txt_e456f074419b_0065 ticker=NVDA fy=2025 section=Item 1A. Risk Factors – Risks Related to Regulatory, Legal, Our Stock and Other src=full-submission.txt
+      text_len=1500 text_head='Item 1A. Risk Factors – Risks Related to Regulatory, Legal, Our Stock and Other Matters” for a discussion of this potential impact. Macroeconomic Factors Macroe'
+  [ctx] chunk_id=NVDA_txt_55837e7ef992_0021 ticker=NVDA fy=2026 section=Item 1A. Risk Factors” for a discussion of these potential impacts. Human Capita src=full-submission.txt
+      text_len=1465 text_head='Item 1A. Risk Factors” for a discussion of these potential impacts. Human Capital Management As of the end of fiscal year 2026, we had approximately 42,000 empl'
+  [ctx] chunk_id=NVDA_txt_4e2da079297d_0000 ticker=NVDA fy=UNKNOWN section=General src=A_AI_Infrastructure_Expansion_FY2026.pdf
+      text_len=1498 text_head='NVIDIA Corporation (NVDA) FY2026 Special Supplement: Data Center & AI Infrastructure Performance Ticker Symbol: NVDA (NASDAQ) Fiscal Year: FY2026 Q2 Supplement '
+
+=== STAGE D: GENERATOR INPUT (final LLM context docs) ===
+  [llm] chunk_id=NVDA_tbl_91c7ded32187_0020 ticker=NVDA fy=2026 section=Item 9A. Our responsibility is to express opinions on the Company’s consolidated src=full-submission.txt
+      text_len=909 text_head='Year Ended Jan 25, 2026 | Jan 26, 2025 | Jan 28, 2024 Revenue | $ | 215938 | $ | 130497 | $ | 60922 Cost of revenue | 62475 | 32639 | 16621 Gross profit | 15346'
+  [llm] chunk_id=NVDA_tbl_bf56f12bfafa_0059 ticker=NVDA fy=2025 section=Part IV src=full-submission.txt
+      text_len=1151 text_head='| Unnamed: 0 | Unnamed: 1 | Unnamed: 2 | Unnamed: 3 | Unnamed: 4 | Unnamed: 5 | Unnamed: 6 | Unnamed: 7 | Unnamed: 8 | Unnamed: 9 | Unnamed: 10 | Unnamed: 11 | '
+  [llm] chunk_id=NVDA_txt_3c10a7b2a928_0106 ticker=NVDA fy=2026 section=Item 9A. Our responsibility is to express opinions on the Company’s consolidated src=full-submission.txt
+      text_len=1019 text_head='| Unnamed: 0 | Unnamed: 1 | Unnamed: 2 | Unnamed: 3 | Unnamed: 4 | Unnamed: 5 | Unnamed: 6 | Unnamed: 7 | Unnamed: 8 | Unnamed: 9 | Unnamed: 10 | Unnamed: 11 | '
+  [llm] chunk_id=NVDA_txt_8cb3bfd9da02_0013 ticker=NVDA fy=2026 section=Item 1. Business Our Company NVIDIA pioneered accelerated computing to help solv src=full-submission.txt
+      text_len=1500 text_head='Our platforms address four large markets where our expertise is critical: Data Center, Gaming, Professional Visualization, and Automotive. Data Center The NVIDI'
+  [llm] chunk_id=NVDA_txt_e456f074419b_0065 ticker=NVDA fy=2025 section=Item 1A. Risk Factors – Risks Related to Regulatory, Legal, Our Stock and Other src=full-submission.txt
+      text_len=1500 text_head='Item 1A. Risk Factors – Risks Related to Regulatory, Legal, Our Stock and Other Matters” for a discussion of this potential impact. Macroeconomic Factors Macroe'
+  [llm] chunk_id=NVDA_txt_55837e7ef992_0021 ticker=NVDA fy=2026 section=Item 1A. Risk Factors” for a discussion of these potential impacts. Human Capita src=full-submission.txt
+      text_len=1465 text_head='Item 1A. Risk Factors” for a discussion of these potential impacts. Human Capital Management As of the end of fiscal year 2026, we had approximately 42,000 empl'
+  [llm] chunk_id=NVDA_txt_4e2da079297d_0000 ticker=NVDA fy=UNKNOWN section=General src=A_AI_Infrastructure_Expansion_FY2026.pdf
+      text_len=1498 text_head='NVIDIA Corporation (NVDA) FY2026 Special Supplement: Data Center & AI Infrastructure Performance Ticker Symbol: NVDA (NASDAQ) Fiscal Year: FY2026 Q2 Supplement '
+INFO httpx: HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+
+=== STAGE E: stream yielded 1 parts ===
+{"timestamp": "2026-09-05T16:36:22.091739+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "query_stream", "line": 2263, "message": "Stream complete: 1 tokens"}
+INFO pipeline.orchestrator: Stream complete: 1 tokens
+
+=== FULL RAW LLM OUTPUT ===
+{
+  "internal_thought": "Identify the supplemental filing (NVDA_txt_4e2da079297d_0000) which contains a table of segment revenues. Locate the Data Center (Compute & Networking) row showing FY2026 revenue $108,400 (in millions) and YoY growth +128.1%. Confirm the fiscal year requested (FY2026) matches the data. Extract these numbers exactly as presented, preserving $ and % and M. Formulate the answer with the revenue and growth percentage. Cite the source using ticker, document fiscal_year attribute, section, and page.",
+  "extracted_raw_data": "Data Center (Compute & Networking) $47,525 $108,400 +128.1% (FY2025 FY2026 YoY Growth)",
+  "answer": "NVIDIA's Data Center revenue in FY2026 was $108,400 M, representing a year‑over‑year growth of 128.1%.",
+  "sources": ["NVDA - UNKNOWN - General - None"]
+}
+
+=== RAW len: 808 ===
+PARSED answer: "NVIDIA's Data Center revenue in FY2026 was $108,400 M, representing a year‑over‑year growth of 128.1%."
+PARSED extracted_raw_data: Data Center (Compute & Networking) $47,525 $108,400 +128.1% (FY2025 FY2026 YoY Growth)
+PARSED sources: ['NVDA - UNKNOWN - General - None']

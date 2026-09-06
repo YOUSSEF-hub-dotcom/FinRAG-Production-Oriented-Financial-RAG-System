@@ -1,1199 +1,302 @@
-# Financial Report Analysis RAG System
+# Financial RAG
 
-> **Production-oriented Retrieval-Augmented Generation (RAG) system for financial report analysis, built around SEC filings with structured ingestion, hybrid chunking, vector retrieval, dual storage, LLM generation, numerical guardrails, caching, observability, FastAPI, and Streamlit.**
+An enterprise-style Retrieval-Augmented Generation system for analyzing SEC financial reports — with table-aware retrieval, fiscal-year reasoning, multi-company comparison, conversational memory, grounding, security, caching, and a production-oriented engineering stack.
 
 ---
 
 ## Overview
 
-**Financial_RAG** is a production-oriented RAG system designed to answer questions over financial reports while preserving the structure and numerical integrity of financial data.
+Financial RAG ingests SEC 10-K filings (HTML/SGML/TXT/IPCCs) and API uploads (PDF/DOCX/HTML/TXT), indexes them into a dual document + vector store, and answers grounded financial questions with a dense+sparse hybrid retriever, a cross-encoder reranker, table-aware context construction, a Groq LLM generator, and an async hallucination guardrail. It ships a FastAPI backend (auth, RBAC, rate limiting, SSE streaming, audit logging, analytics) consumed by a Next.js 15 dashboard and a legacy Streamlit client.
 
-The system was built as an end-to-end pipeline rather than as a simple "retrieve chunks and ask an LLM" implementation. It separates the offline ingestion lifecycle from the online query lifecycle and introduces dedicated components for:
+**What problem it solves.** Financial filings are long, form-heavy documents where the answers live in tables, not prose. Answers depend on *which* fiscal year you mean, frequently compare multiple companies, and require exact figures with traceable sources. A generic document Q&A system struggles here because:
 
-- SEC filing parsing and HTML table handling
-- Financial-text cleaning with preservation of financial notation
-- Metadata extraction and contextual tagging
-- Three-tier token-bounded chunking
-- Embedding generation with `nomic-ai/nomic-embed-text-v1.5`
-- Qdrant vector retrieval with metadata pre-filtering
-- MongoDB document storage and text enrichment
-- Groq-hosted LLM generation with model fallback
-- Strict Pydantic output validation
-- Numerical post-generation verification
-- Redis exact-match query caching
-- Structured JSON logging and MLflow tracking
-- FastAPI production backend
-- Multi-format document upload
-- Streamlit financial dashboard
-- Unit, integration, and end-to-end testing
+- **Numbers live in tables.** Embedded XBRL tables, dense income statements, and segment breakdowns are shredded by naive sentence splitting.
+- **Fiscal-year ambiguity.** "Revenue" means different things for FY2024 vs FY2025 vs FY2026, and query phrasing is inconsistent (`FY2025`, `Fiscal Year 2025`, `FY-2025`).
+- **Cross-entity questions.** "Compare Apple, Microsoft, and NVIDIA margins" needs balanced evidence from *each* ticker, not just the one that ranks highest.
+- **Hallucination is dangerous.** A fluent but wrong revenue figure is worse than a refusal.
 
-The result is a complete RAG application architecture with ingestion, retrieval, generation, validation, API serving, UI, testing, and observability.
+**Main engineering challenges addressed:**
+
+- Data-oriented tokenization and **detrimental pagination-free routing** of E2E fiscal-year questions
+- Table-aware chunking, table → Markdown conversion, table placeholder isolation, and query-grounded table injection under a shared context token/character budget
+- Deterministic, idempotent chunk identifiers and dual-store consistency
+- Hybrid retrieval (dense + BM25 with native score fusion) and FP16-accelerated cross-encoder reranking with CPU fallback
+- Conversational coreference across turns ("the second company")
+- Guardrails, semantic caching, streaming, authN/authZ, audit, and monitoring
+
+> For deep architectural detail, see the **[Project Map](PROJECT_MAP.md)** — this README is the high-level entry point.
 
 ---
 
-## System Goals
+## What the System Can Do
 
-The system is designed around several practical requirements of financial-document QA:
+Every item below is implemented and used by the default production configuration (see **[Project Map §3](PROJECT_MAP.md#3-system-capabilities)** and §26 for the known-limitation caveats).
 
-1. **Preserve financial structure**
-   - Financial tables are isolated and converted to Markdown.
-   - Financial notation such as `(150)`, `$`, `%`, and `M/B/K` is preserved during cleaning.
-
-2. **Retrieve with contextual constraints**
-   - Vector retrieval is performed through Qdrant.
-   - Metadata filters such as `ticker` and `fiscal_year` are applied before retrieval.
-
-3. **Separate retrieval storage from source-of-truth storage**
-   - Qdrant stores vectors and retrieval metadata.
-   - MongoDB stores raw text and complete metadata used for downstream enrichment and verification.
-
-4. **Constrain LLM output**
-   - Responses are validated against strict Pydantic schemas.
-   - Generation uses structured JSON output.
-
-5. **Verify financial claims**
-   - A post-generation guardrail checks numerical claims against raw MongoDB data before a response is accepted.
-
-6. **Avoid unsafe cache pollution**
-   - Only validated successful responses are cached.
-   - Invalid, fallback, and `"not available"` responses are not written to Redis.
-
-7. **Provide production-style interfaces**
-   - FastAPI exposes the RAG backend.
-   - Streamlit provides the interactive financial dashboard.
-   - Health checks, structured logging, metrics, and background tasks are included.
-
----
-
-# Architecture
-
-The system is divided into two primary execution phases:
-
-```text
-                    FINANCIAL_RAG
-                         │
-            ┌────────────┴────────────┐
-            │                         │
-            ▼                         ▼
-     OFFLINE INGESTION          ONLINE RAG PIPELINE
-            │                         │
-            ▼                         ▼
-      Parse & Clean              Query Processing
-            │                         │
-            ▼                         ▼
-      Metadata Tagging             Redis Cache
-            │                         │
-            ▼                         ▼
-       Hybrid Chunking          Qdrant Retrieval
-            │                         │
-            ▼                         ▼
-       Dual Indexing             Mongo Enrichment
-            │                         │
-      ┌─────┴─────┐                   ▼
-      │           │              LLM Generation
-   MongoDB     Qdrant                 │
-      │           │                   ▼
-      │           │              Guardrail
-      │           │                   │
-      └───────────┴───────────────────┘
-                                      │
-                                      ▼
-                          Validated Financial Answer
-```
-
----
-
-## 1. Offline Ingestion Pipeline
-
-The ingestion pipeline transforms raw financial filings into searchable and verifiable representations.
-
-```text
-Raw SEC Filing (HTML/TXT)
-        │
-        ▼
-┌──────────────────────────────┐
-│ html_table_parser.py         │
-│ Table Detection              │
-│ HTML → Markdown              │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│ metadata_extractor.py        │
-│ Contextual Metadata          │
-│ ticker / year / section      │
-│ table flag / chunk UUID      │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│ hybrid_chunker.py            │
-│ 3-Tier Chunking              │
-│ Section → Table → Recursive  │
-│ 512–768 tokens / 10–15%      │
-│ overlap                      │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│ database_indexer.py          │
-│ Dual Storage                 │
-│                              │
-│ MongoDB     +     Qdrant     │
-│ raw/meta          vectors    │
-└──────────────────────────────┘
-```
-
-### Parsing and table handling
-
-SEC filings can contain complex HTML structures, particularly financial tables.
-
-The ingestion layer uses:
-
-- **BeautifulSoup4**
-- **lxml**
-- **Pandas**
-- **Tabulate**
-
-Tables are detected and converted into a clean Markdown representation using `to_markdown()`.
-
-This allows table content to remain available as structured context instead of treating financial tables as ordinary unstructured text.
-
-### Financial text cleaning
-
-The cleaning stage intentionally preserves financial notation, including:
-
-- Parenthetical negative values such as `(150)`
-- Currency symbols such as `$`
-- Percentages such as `%`
-- Financial magnitude notation such as `M`, `B`, and `K`
-
-This is important because altering these representations can change the meaning of financial information.
-
-### Metadata extraction
-
-Each chunk receives contextual metadata including:
-
-- `ticker`
-- `fiscal_year`
-- `section`
-- `doc_type`
-- `contains_table`
-- `chunk_id`
-
-This metadata is later used during retrieval and downstream processing.
-
----
-
-# 2. Hybrid Chunking Strategy
-
-The system uses a **three-tier chunking strategy** instead of applying a single recursive splitter to the entire document.
-
-```text
-Document
-   │
-   ▼
-1. Section-Level Splitting
-   │
-   ▼
-2. Table Isolation
-   │
-   ├── Text
-   │
-   └── Complete Table
-   │
-   ▼
-3. Recursive Token-Bounded Chunking
-```
-
-### Tier 1 — Section-level splitting
-
-The document is first divided according to its structural sections.
-
-This preserves higher-level financial context.
-
-### Tier 2 — Table isolation
-
-Financial tables are isolated and kept whole.
-
-This is a deliberate design decision because splitting a financial table into arbitrary chunks can separate headers, rows, and numerical values.
-
-### Tier 3 — Recursive token-bounded splitting
-
-Text is recursively divided using token-aware boundaries:
-
-- **512–768 tokens**
-- **10–15% overlap**
-- Nomic-compatible tokenization
-
-The implementation also accounts for the fact that financial tables can exceed the normal token constraint when they are treated as atomic table chunks.
-
----
-
-# 3. Dual Storage Architecture
-
-The system intentionally separates vector retrieval storage from source-of-truth document storage.
-
-```text
-                     Indexed Chunk
-                         │
-              ┌──────────┴──────────┐
-              │                     │
-              ▼                     ▼
-          MongoDB                 Qdrant
-              │                     │
-       Raw text + metadata     768-dim vectors
-              │                     │
-              │                HNSW retrieval
-              │                     │
-              └──────────┬──────────┘
-                         ▼
-                 Retrieved Context
-```
-
-### MongoDB
-
-MongoDB stores:
-
-- Raw text
-- Markdown table representations
-- Full metadata
-- Chunk information
-
-MongoDB is also used to retrieve the actual text after vector retrieval.
-
-### Qdrant
-
-Qdrant stores:
-
-- 768-dimensional embeddings
-- Retrieval metadata
-- HNSW vector index
-
-The vector store is optimized for approximate nearest-neighbor retrieval.
-
-### Why two stores?
-
-The architecture separates two responsibilities:
-
-| Responsibility | Storage |
+| Capability | Notes |
 |---|---|
-| Raw document text | MongoDB |
-| Full metadata | MongoDB |
-| Source-of-truth verification | MongoDB |
-| Vector similarity search | Qdrant |
-| HNSW ANN index | Qdrant |
-| Metadata pre-filtering | Qdrant |
-
-An important implementation detail is that Qdrant does **not** contain `raw_text`. After retrieval, chunk IDs are used to fetch the corresponding text from MongoDB.
+| SEC financial-report analysis | Parses SEC 10-K filings: HTML/TXT/SGML plus API-uploaded PDF/DOCX/HTML/TXT; financial-text cleaning that protects `(...)` negatives, `$` scales, and percentages |
+| Table-aware retrieval | Each `<table>` becomes an atomic Markdown chunk; tables are isolated through the pipeline and re-injected by query in context construction |
+| Single-company questions | `AAPL`, `MSFT`, `NVDA` supported |
+| Multi-company comparison | Cross-entity questions auto-detect tickers (incl. `ticker=ALL`) and run balanced per-ticker sub-retrieval merged by `chunk_id` |
+| Fiscal-year-aware questions | `FY2025` / `Fiscal Year 2025` / `FY-2025` normalize to a canonical `"2025"` filter and drive table injection |
+| Conversational follow-ups | Session-scoped memory resolves cross-turn coreference ("the second company") |
+| Grounded answers with sources | Responses carry `ticker - fiscal_year - section - page` provenance |
+| Refusal / negative-query handling | Unsupported / absent figures return a controlled "not available" message instead of fabricated numbers |
+| Semantic caching | Two-tier Redis cache (static vs ad-hoc); only verified answers are written back |
+| Streaming | SSE `token → answer → sources → done`; word-granular decoded answer text |
+| Authentication / RBAC / security | JWT, bcrypt, role-based admin gating, rate limiting, token revocation, HttpOnly refresh cookie |
+| Monitoring / audit / evaluation | Structured JSON logs, full per-request Mongo audit traces, analytics endpoints, MLflow tracking |
 
 ---
 
-# 4. Online Retrieval & Generation Pipeline
+## Architecture
 
-```text
-User Query
-    │
-    ▼
-Query Normalization
-    │
-    ▼
-Redis Exact-Match Cache
-    │
-    ├── HIT ───────────────► Cached Response
-    │
-    └── MISS
-          │
-          ▼
-    Qdrant Vector Search
-          │
-          ▼
-    Metadata Pre-Filtering
-    ticker / fiscal_year / section
-          │
-          ▼
-    MongoDB Text Enrichment
-          │
-          ▼
-    Groq LLM Generation
-          │
-          ▼
-    Pydantic Validation
-          │
-          ▼
-    Async Numerical Guardrail
-          │
-          ├── PASS ────────► Redis Cache Write
-          │
-          └── FAIL ────────► Safe Fallback
-          │
-          ▼
-    ConsolidatedFinancialAnswer
+```mermaid
+flowchart TD
+    U[User] --> FE[Next.js 15 Dashboard]
+    U --> SL[Streamlit Legacy]
+    FE -->|POST /api/v1/chat/stream| API[FastAPI app api/main.py]
+    SL -->|POST /api/v1/chat| API
+    API --> AUTH[Auth JWT + RBAC + RateLimit]
+    API --> M[Session Memory API-layer]
+    API --> PIPE[FinancialRAGPipeline]
+    PIPE --> CACHE[Redis Semantic Cache 2-tier]
+    PIPE --> RET[Hybrid Dense + BM25 + RRF]
+    RET --> RERANK[CrossEncoder bge-reranker-large FP16]
+    RERANK --> POST[PostRetrieval: table shield + cylinder reorder]
+    POST --> CONTEXT[augment_context + table injection]
+    CONTEXT --> GEN[Groq generator structured JSON]
+    GEN --> GRD[AsyncGuardrail self-consistency]
+    GRD -->|PASS only| CACHE
+    RET -.Qdrant.- QD[(Qdrant financial_vectors 768d)]
+    CONTEXT -.Mongo tables.- MO[(MongoDB raw_chunks)]
+    GRD -.Mongo raw text.- MO
+    API --> AUDIT[MongoAuditLogger rag_audit_logs]
+    API --> SSE[SSE: token / answer / sources / done]
 ```
 
----
-
-## Retrieval
-
-The retrieval layer uses **Qdrant HNSW approximate nearest-neighbor search**.
-
-Metadata can be applied before retrieval, including:
-
-- `ticker`
-- `fiscal_year`
-- `section`
-
-This provides a way to constrain retrieval to the relevant financial context.
-
-### Retrieval + enrichment
-
-Retrieval is implemented as a two-phase process:
-
-1. Retrieve relevant vector matches from Qdrant.
-2. Fetch the corresponding text from MongoDB using the retrieved chunk IDs.
-
-This design exists because Qdrant stores the vector representation and metadata, while MongoDB remains the source for the actual raw text.
+**Request lifecycle.** `POST /api/v1/chat/stream` restores session memory → `pipeline.query_stream()` → fiscal-year normalization and multi-ticker detection → optional semantic-cache lookup → hybrid retrieval (dense Qdrant ANN + BM25 → native score fusion) → post-retrieval (rerank 40→8, table shield, cylinder reorder) → table-placeholder resolution → `_augment_context` (query-grounded table injection under a 12,000-char budget) → context formatting to XML → Groq generator → guardrail → cache write-back (pass only) → SSE events → audit log. The pipeline itself is **stateless**; per-session memory is held at the API layer (§11 of the Project Map).
 
 ---
 
-# 5. LLM Generation Layer
+## RAG Pipeline
 
-The generation engine is built around Groq-hosted LLMs.
+The pipeline stages, and *why* each one exists:
 
-### Primary model
-
-```text
-llama-3.3-70b-versatile
-```
-
-Configuration:
-
-- Temperature: `0.0`
-- Seed: `42`
-
-### Fallback model
-
-```text
-qwen/qwen3.6-27b
-```
-
-If the primary model fails, the system automatically falls back to the secondary model.
-
-The project also includes robust handling for model output variations, including stripping Qwen thinking tags before JSON extraction.
-
-### Generation features
-
-The generation engine includes:
-
-- Primary/fallback model strategy
-- Exponential-backoff retry
-- Up to 3 attempts
-- XML `<CONTEXT>` enclosure
-- Sliding conversation memory
-- `K=6` history window
-- True asynchronous token streaming
-- Strict JSON output
-- Raw-text fallback when JSON parsing fails
-- MLflow generation metrics
+1. **Parsing** — SEC HTML/SGML is cleaned (boilerplate, scripts, XBRL inline tags removed) and every `<table>` is converted to Markdown and replaced with a `%%TABLE_n%%` placeholder so tables are never shredded by later steps.
+2. **Cleaning** — an 8-step pass protects financial notation (`(...)` negatives, `$M/$B` scales, percentages) before whitespace collapse, so tokenization doesn't corrupt numbers.
+3. **Chunking** — three tiers: section-level splits → atomic table isolation → recursive 768–1024 token split (20% overlap). Each chunk gets deterministic metadata (ticker, fiscal year, section, type) and an md5-based `chunk_id`.
+4. **Embedding & indexing** — `nomic-ai/nomic-embed-text-v1.5` (768-dim, CUDA) embeds chunks into Qdrant (`financial_vectors`); raw text + full metadata live in MongoDB (`raw_chunks`) for hydration, table injection, and guardrails. A unique `chunk_id` index makes re-ingestion idempotent.
+5. **Hybrid retrieval** — dense ANN (Qdrant) and BM25 (over the pre-filtered Mongo corpus) are fused by native score fusion (RRF, k=60) into a top-40 candidate set. A "table rescue" path boosts segment-keyword queries to ensure financial tables survive the funnel.
+6. **Cross-encoder reranking** — `BAAI/bge-reranker-large` narrows 40 → 8 chunks with higher precision than cosine distance alone, running in FP16 on GPU with an automatic FP32 CPU fallback.
+7. **Post-retrieval shaping** — TableShield passes tables through intact (compacting oversized table text) and a cylinder reorder mixes the ranking so the LLM sees varied evidence order.
+8. **Context construction** — `_augment_context` walks ranked chunks up to a shared 12,000-char budget, then injects the *right* supplementary tables per ticker/year gated on query terms and table-size bands.
+9. **Generation** — Groq (`openai/gpt-oss-120b`, fallback `-20b`) returns a structured JSON `{internal_thought, extracted_raw_data, answer, sources}` with temperature 0.0, a strict zero-hallucination CFO prompt, and a `MULTI-COMPANY COMPARISON MODE` directive for cross-ticker queries. Retries with exponential backoff, then fallback model, then a safe message.
+10. **Grounding / guardrail** — the async guardrail checks that every number in the answer appears in the model's own `extracted_raw_data` (self-consistency). A failing answer is replaced with a safe fallback and **not** written to the cache. *(Limited to self-consistency — see §Known Limitations.)*
+11. **Streaming** — SSE events decode the top-level `answer` word-by-word; thought and raw data are never surfaced.
 
 ---
 
-# 6. Structured Output with Pydantic
+## Financial Reasoning Example
 
-The generation layer does not simply return unstructured LLM text.
+The system indexes AAPL, MSFT, and NVDA 10-K filings for multiple fiscal years. Consider these verified behaviors:
 
-Responses are validated through Pydantic v2 schemas.
+**Fiscal-year correctness.** "What was NVIDIA's Data Center revenue in FY2026?" resolves `FY2026` → filter `fiscal_year="2026"` and injects the FY2026 Data Center table, producing the grounded answer **"NVIDIA's Data Center revenue in FY2026 was $108,400M (+128.1%)"** with non-zero grounding data. This matters because the same question for FY2025 or FY2024 would differ by billions — a naive system that ignores the year returns a wrong-but-plausible number.
 
-Core schemas include:
+**Multi-company comparison.** Balancing evidence per ticker (the batched multi-ticker path retrieves a comparable number of chunks for `AAPL`, `MSFT`, and `NVDA`, merged and de-duplicated by `chunk_id`) lets "Compare Apple, Microsoft, and NVIDIA margins" return a side-by-side result rather than favoring whichever company's text ranked highest.
 
-- `ConsolidatedFinancialAnswer`
-- `GuardrailVerdict`
-- `CacheEntry`
-
-The consolidated answer contains structured fields such as:
-
-- Internal thought
-- Extracted raw data
-- Final answer
-- Sources
-
-Field validation is applied before the result proceeds through the pipeline.
+**Table-aware retrieval is why numbers are right.** Income-statement and segment figures live in tables; table-isolation + query-grounded table injection ensure those figures (e.g. Apple FY2025 total revenue **$416,161M**) reach the LLM in structured form instead of being truncated or mixed by generic chunking.
 
 ---
 
-# 7. Financial Guardrails
+## Engineering Highlights
 
-Financial QA requires special attention to numerical claims.
+Selected as **problem → decision → result** when a result is verified.
 
-The project therefore implements an asynchronous post-generation verification loop.
+### FP16 cross-encoder reranking
+- **Problem:** `bge-reranker-large` on GPU is the retrieval-latency hotspot.
+- **Decision:** run the cross-encoder in FP16 (`RERANKER_DTYPE=float16`), with a float32 CPU fallback for non-GPU deployments and strict per-parameter dtype verification.
+- **Result:** ~66–70% rerank latency reduction and ~50% lower VRAM with **identical top-8 ranking** vs FP32 on a validation set (7 real queries), pipeline-context chunk lists bit-identical, and real E2E answers unchanged ([`artifacts/ab2_benchmark/fp16_impl_report.md`](artifacts/ab2_benchmark/fp16_impl_report.md)).
 
-```text
-LLM Response
-     │
-     ▼
-Extract Numerical Claims
-     │
-     ▼
-Compare Against MongoDB Raw Data
-     │
-     ├── Match ─────► PASS
-     │
-     └── Mismatch ──► Safe Fallback
-```
+### Table preservation through the whole chain
+- **Problem:** standard paragraph-tokenization destroys financial figures.
+- **Decision:** tables become atomic Markdown chunks with placeholder substitution at parse time; TableShield keeps them intact through reranking; `_augment_context` re-injects query-relevant tables under a shared budget.
 
-The guardrail performs numerical verification using a regex-based mechanism rather than making another LLM call.
+### Deterministic, idempotent chunking
+- **Problem:** re-ingesting a filing would duplicate or re-key every chunk.
+- **Decision:** `chunk_id = md5(ticker:fiscal_year:type:source:index)` → `{TICKER}_{txt|tbl}_{hash}_{index}`; Mongo upserts on a unique `chunk_id`, Qdrant point id = `uuid5(chunk_id)`.
+- **Result:** re-ingestion is idempotent (with a known caveat: stale ids are not deleted — §Known Limitations).
 
-This creates an additional verification layer between generation and the final user-facing response.
+### Budget-aware context construction
+- **Problem:** naive `top-3` context assembly could bury an important chunk and blow the token budget.
+- **Decision:** a shared 12,000-char budget walks ranked docs (trimming each to 1,500 chars) and gates table injection on per-slot caps divided across tickers.
 
-### Guardrail behavior
+### Fiscal-year query normalization
+- **Problem:** users write `FY2025`, `Fiscal 2025`, `FY-2025`, `fy2025`.
+- **Decision:** a single regex normalizes all to canonical `"2025"` and drives both the retrieval filter and table metadata (`Fix B` threads the API `fiscal_year` query param into stored metadata).
 
-The guardrail can:
+### Conversation memory at the API layer
+- **Problem:** multi-turn coreference needs history, but persisting full RAG context to memory causes 413/token blowups.
+- **Decision:** the pipeline stays stateless; the API keys prior *questions* by `session_id` and swaps them into the shared generator's memory per request — enabling "the second company" resolution while keeping the context stateless.
 
-- Validate numerical claims
-- Reject inconsistent generated answers
-- Trigger safe fallback behavior
-- Control whether a response is written to Redis
-- Log guardrail metrics to MLflow
+### Semantic cache with grounding gate
+- **Problem:** repeated expensive queries, but caching unverified answers spreads hallucination.
+- **Decision:** a two-tier Redis semantic cache (static vs ad-hoc) that only receives answers that **passed** the guardrail, keyed by ticker/year/trace.
 
----
+### Streaming architecture
+- **Problem:** Groq JSON mode coalesces the whole response into one provider chunk — raw token streaming yields no live text.
+- **Decision:** a streaming JSON extractor incrementally decodes the `answer` value and emits whitespace-delimited words over SSE; thoughts and raw data are never surfaced.
 
-# 8. Redis Caching
-
-The project includes Redis-backed query caching.
-
-Despite the internal `SemanticCache` class name, the implemented cache is an **exact-match cache**, not a vector-semantic similarity cache.
-
-### Cache key
-
-The query is normalized and hashed with SHA-256:
-
-```text
-rag_cache:{sha256_hash}
-```
-
-### Cache lifecycle
-
-```text
-Query
-  │
-  ▼
-Normalize
-  │
-  ▼
-SHA-256
-  │
-  ▼
-Redis Lookup
-  │
-  ├── HIT ─────► Return Cached Response
-  │
-  └── MISS
-        │
-        ▼
-     RAG Pipeline
-        │
-        ▼
-     Guardrail
-        │
-        ├── PASS ──► Write to Redis
-        │
-        └── FAIL ──► Do Not Cache
-```
-
-### Cache pollution prevention
-
-The system does **not** cache:
-
-- Invalid responses
-- Fallback responses
-- `"not available"` responses
-- Responses that fail guardrail verification
-
-The cache can also be flushed through:
-
-```http
-DELETE /api/v1/cache
-```
+### Resilience & fallbacks
+- Cross-encoder exceptions degrade to a stable empty-score result; LLM failures retry then fall back to a smaller model then a safe refusal; Redis being down disables caching (blacklist/rate-limit degrade) without taking the rest of the app down; MLflow fetch failure falls through to direct pipeline instantiation so the app always boots.
 
 ---
 
-# 9. Conversation Memory
+## Performance & Validation
 
-The generation engine maintains a sliding conversation history.
+Results are labeled by evidence strength. See **[Project Map §21](PROJECT_MAP.md#21-testing--validation)** for the source files.
 
-Configuration:
+### Validated (live/production-path evidence)
 
-```text
-K = 6 messages
-```
+| Item | Result |
+|---|---|
+| FP16 reranker | Latency −66–70%, VRAM −50%, **identical top-8** ranking vs FP32; 5 real E2E queries incl. a refusal and a coref case all pass |
+| Fiscal-year E2E regression | `EXIT: PASS` — `FY2025` variant, exact-`FY2025` margin, supplementary table injection, primary model, no refusal |
+| FY2026 supplement repro | Retrieval → context → LLM verified: Data Center `$108,400M / +128.1%` with non-zero grounding data |
+| `Fix B` fiscal metadata | Validated against the real `_ingest_document` — chunk stored with `fiscal_year='2026'` (`FIXB_PASS`) |
+| Reranker dtype tests | 12 dedicated tests + 28 existing pass (40 total) |
 
-This provides short-term conversational context without allowing the history to grow indefinitely.
+### Production configuration (default runtime)
+- `RERANKER_DTYPE=float16`; `HYBRID_TOP_K=40`, RRF `k=60`, rerank `top_n=8`; context budget `12,000` chars; chunk 768–1024 tokens / 20% overlap; primary model `openai/gpt-oss-120b`.
 
----
+### Historical (recorded, not re-run against the current working tree)
+- **Version 7 quality-gate scores** (25-sample testset, judge `qwen/qwen3.6-27b`): Faithfulness **0.990**, Answer Relevance **0.920**, Context Precision **0.845**, Context Recall **0.847** — recorded in `artifacts/EVALUATION_SUMMARY.md`. Labeled **historical** because the gate was not re-run against the current working tree.
+- The earlier "447/447 full-suite pass" claim is likewise historical, not re-proven.
 
-# 10. Observability & MLflow
-
-The project uses structured JSON logging and MLflow tracking.
-
-### Structured logging
-
-All major modules emit JSON logs to:
-
-```text
-logs/rag_events.log
-```
-
-The logging format is designed to remain compatible with external log ingestion systems such as ELK or Datadog.
-
-### MLflow
-
-MLflow tracks generation and pipeline metrics including:
-
-- Model parameters
-- Temperature
-- Maximum tokens
-- Seed
-- Conversation history size
-- Time to first token
-- Total generation tokens
-- Guardrail result
-- Fallback activation
-- End-to-end latency
-- Retrieval count
-- Cache hit/miss
+### Test-suite status (current)
+- Targeted runs: **88 passed, 4 known pre-existing failures** (a cache-miss expectation and an MLflow metrics test in `test_pipeline_orchestrator.py`; two `UnboundLocalError` pre-retrieval tests). The **full native suite has not been validated** in the current working tree (an interrupted earlier run stopped near 64%).
 
 ---
 
-# 11. Production FastAPI Backend
-
-The system exposes the RAG pipeline through FastAPI.
-
-## Endpoints
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| `POST` | `/api/v1/chat` | Main RAG query |
-| `POST` | `/api/v1/chat/stream` | Streaming RAG response |
-| `POST` | `/api/v1/documents/upload` | Multi-format document upload |
-| `DELETE` | `/api/v1/cache` | Flush Redis cache |
-| `GET` | `/health` | Service health check |
-
-### `/api/v1/chat`
-
-Returns a structured `ChatQueryResponse` containing the answer, sources, and metrics.
-
-### `/api/v1/chat/stream`
-
-Provides SSE-based streaming using the asynchronous generation path.
-
-### `/api/v1/documents/upload`
-
-Accepts supported document formats and queues ingestion through FastAPI background tasks.
-
-### `/health`
-
-Checks connectivity to:
-
-- MongoDB
-- Qdrant
-- Redis
-
----
-
-# 12. Multi-Format Document Ingestion
-
-The API layer extends the original SEC ingestion pipeline with multiple file formats.
-
-Supported formats:
-
-```text
-HTML / HTM / TXT / SGML
-PDF
-DOCX
-```
-
-### Parser routing
-
-| Extension | Primary Parser | Fallback |
-|---|---|---|
-| `.html` / `.htm` / `.txt` / `.sgml` | Existing SEC parser | — |
-| `.pdf` | LlamaParse | pypdf |
-| `.docx` | LlamaParse | python-docx |
-
-The parser layer is implemented through `APIFileParser`.
-
-For PDF and DOCX documents, LlamaParse is used as the primary parser with local extraction fallbacks.
-
----
-
-# 13. Streamlit Financial Dashboard
-
-The project includes an interactive Streamlit dashboard connected to the FastAPI backend.
-
-```text
-                 Streamlit UI
-                      │
-        ┌─────────────┼─────────────┐
-        │             │             │
-        ▼             ▼             ▼
-   Health Monitor   Upload       Chat
-                                      │
-                              Real-Time Streaming
-                                      │
-                                      ▼
-                                  Sources
-                                      │
-                                      ▼
-                              Performance Metrics
-```
-
-## Dashboard capabilities
-
-### Health Monitor
-
-Displays service status for:
-
-- MongoDB
-- Qdrant
-- Redis
-
-### Document Upload
-
-Allows users to:
-
-- Upload supported files
-- Provide ticker
-- Provide fiscal year
-- Trigger document ingestion
-- View resulting chunk counts
-
-### Financial Chat
-
-The dashboard provides:
-
-- Conversational history
-- Ticker filtering
-- Fiscal-year filtering
-- Real-time token streaming
-- Source inspection
-- Performance information
-
-### Sources
-
-Each assistant response can expose:
-
-- Ticker
-- Fiscal year
-- Section
-- Retrieval score
-- Text snippet
-
-### Performance footer
-
-Each response displays:
-
-- Execution time
-- Model used
-- Cache HIT/MISS
-
----
-
-# 14. Project Structure
-
-```text
-Financial_RAG/
-│
-├── data/
-│   ├── AAPL/10-K/
-│   ├── MSFT/10-K/
-│   └── NVDA/10-K/
-│
-├── config/
-│   ├── __init__.py
-│   ├── settings.py
-│   └── logging_config.py
-│
-├── src/
-│   ├── __init__.py
-│   │
-│   ├── 1_ingestion/
-│   │   ├── __init__.py
-│   │   ├── html_table_parser.py
-│   │   ├── cleaning.py
-│   │   ├── metadata_extractor.py
-│   │   ├── hybrid_chunker.py
-│   │   └── database_indexer.py
-│   │
-│   ├── 2_generation/
-│   │   ├── __init__.py
-│   │   ├── schemas.py
-│   │   ├── generator.py
-│   │   └── async_guardrail.py
-│   │
-│   └── pipeline.py
-│
-├── app/
-│   ├── __init__.py
-│   │
-│   ├── api/
-│   │   ├── __init__.py
-│   │   ├── schemas.py
-│   │   ├── main.py
-│   │   ├── worker.py
-│   │   └── parsers.py
-│   │
-│   └── ui/
-│       └── streamlit_app.py
-│
-├── test/
-│   ├── __init__.py
-│   ├── test_ingestion_stage1.py
-│   ├── test_ingestion_stage2.py
-│   ├── test_ingestion_e2e_integration.py
-│   ├── test_generation_stage.py
-│   ├── test_generation_e2e_integration.py
-│   ├── test_pipeline_orchestrator.py
-│   ├── test_api_endpoints.py
-│   ├── test_api_upload_parser.py
-│   └── test_streamlit_ui.py
-│
-├── logs/
-│   └── rag_events.log
-│
-├── .env
-├── .gitignore
-├── requirements.txt
-├── PROJECT_MAP.md
-└── README.md
-```
-
----
-
-# 15. Technology Stack
+## Technology Stack
 
 | Layer | Technology |
 |---|---|
-| Language | Python 3.11+ |
-| HTML Parsing | BeautifulSoup4 + lxml |
-| Table Processing | Pandas + Tabulate |
-| Tokenization | tiktoken |
-| Embeddings | `nomic-ai/nomic-embed-text-v1.5` |
-| Vector Store | Qdrant |
-| Document Store | MongoDB |
-| Cache / Memory | Redis |
-| Primary LLM | `llama-3.3-70b-versatile` |
-| Fallback LLM | `qwen/qwen3.6-27b` |
-| LLM Provider | Groq |
-| Orchestration | LangChain + LangChain-Groq |
-| Output Validation | Pydantic v2 |
-| API | FastAPI + Uvicorn |
-| Dashboard | Streamlit |
-| Observability | Structured JSON Logging + MLflow |
-| Secrets | python-dotenv |
+| Frontend | Next.js 15.5.23 (React 19), Tailwind v4, shadcn/ui, Recharts (dashboard SPA); Streamlit (legacy thin client) |
+| API / backend | FastAPI, Uvicorn, Pydantic v2, slowapi, SSE (`sse-starlette`) |
+| LLM generation | Groq — `openai/gpt-oss-120b` (primary), `openai/gpt-oss-20b` (fallback); structured JSON output |
+| LLM judge (eval only) | `qwen/qwen3.6-27b` (primary), `openai/gpt-oss-120b` (fallback) |
+| Embeddings | `nomic-ai/nomic-embed-text-v1.5` (768-dim, CUDA) |
+| Reranker | `BAAI/bge-reranker-large` cross-encoder (FP16 default, FP32 CPU fallback) |
+| Vector database | Qdrant (embedded `path=` local mode, `financial_vectors`, 768-dim Cosine, HNSW) |
+| Document / datastore | MongoDB (`raw_chunks`, `users`, `rag_audit_logs`) |
+| Cache / queue / rate-limit / auth-blacklist | Redis |
+| ML / evaluation / observability | MLflow (SQLite), RAGAS-style judge evaluator, structured JSON logging, per-request Mongo audit |
+| Infrastructure / development | Python 3.12, torch 2.13.0+cu130, WSL2 native (ext4), no Docker (Qdrant embedded; Mongo/Redis native services) |
 
 ---
 
-# 16. Configuration
+## Project Structure
 
-The system uses environment-based configuration through `.env`.
-
-The configuration layer centralizes:
-
-- API keys
-- Database URIs
-- Redis configuration
-- Paths
-- System constants
-- LlamaParse configuration
-
-The project requires the relevant credentials for the configured services, including the Groq API and, where applicable, LlamaParse.
-
----
-
-# 17. Testing & Verification
-
-Testing was treated as a first-class part of the project.
-
-The project includes:
-
-- Unit tests
-- Module integration tests
-- End-to-end ingestion tests
-- Live LLM integration tests
-- API tests
-- Upload parser tests
-- Streamlit UI client tests
-
-## Test status
-
-| Component | Tests | Status |
-|---|---:|---|
-| Ingestion Stage 1 | 12/12 | ✅ |
-| Ingestion Stage 2 | 12/12 | ✅ |
-| Ingestion E2E | 8/8 | ✅ |
-| Generation Engine | 29/29 | ✅ |
-| Generation E2E | 15/15 | ✅ |
-| Pipeline Orchestrator | 24/24 | ✅ |
-| FastAPI Backend | 31/31 | ✅ |
-| Upload Parser | 23/23 | ✅ |
-| Streamlit UI | 17/17 | ✅ |
-
-### Overall result
-
-```text
-148/148 unit tests passing
-+ E2E integration verification
-+ 17/17 Streamlit UI tests
+```
+Financial_RAG/
+├── app/api/            FastAPI: main.py (endpoints, session memory, SSE, upload/ingest,
+│                       audit, analytics), schemas.py, worker.py (Arq), rate_limiter.py,
+│                       db_logger.py, parsers.py, auth/ (JWT, service, dependencies, router)
+├── src/
+│   ├── pipeline.py     RAG orchestrator: fiscal-year, multi-ticker, context construction
+│   ├── model_loader.py 3-tier pipeline loader (cache → MLflow Production → direct)
+│   ├── 1_ingestion/    parsing · cleaning · metadata · hybrid chunker · database indexer
+│   ├── 2_caching/      redis client · two-tier semantic cache
+│   ├── 3_pre_retrieval/ intent router · query expansion (DISABLED by default)
+│   ├── 4_retrieval/    hybrid search · reranker · post-retrieval · table shield · cylinder reorder
+│   └── 5_generation/   generator · async guardrail · streaming JSON extractor
+├── config/             settings.py (env-driven) · logging_config.py (JSON logger)
+├── evaluation/         synthetic generator · batch runner · judge evaluator · MLflow tracker
+├── frontend/           Next.js 15 dashboard (auth, chat, upload, analytics)
+├── test/               ~29 files / ~495 test functions (see §11 Testing)
+├── scripts/            operational + benchmark + diagnostic scripts (see Project Map §22)
+├── artifacts/          benchmarks (ab/ab2 incl. FP16 reports), evaluation results
+├── docs/               forensic/audit write-ups, multi-hop roadmap (planned)
+├── data/               SEC corpus (AAPL/MSFT/NVDA 10-K), Qdrant store
+├── results/            validation/graphic evidence (guardrail, multi-ticker, retrieval, MLflow)
+└── requirements.txt    pinned runtime deps (torch 2.13.0+cu130)
 ```
 
-The project map records the system as fully implemented, with deployment remaining as the next stage.
+*Full inventory, including every module and file, is in **[Project Map §4](PROJECT_MAP.md#4-repository-structure)**.*
 
 ---
 
-# 18. End-to-End Verification
+## Testing & Evaluation
 
-A real AAPL 10-K filing was processed through the complete ingestion pipeline.
+- **Stage & integration tests (29 files, ~495 functions):** ingestion stages and E2E, caching, hybrid search, reranker (+ 12 FP16-dtype tests), table shield, cylinder reorder, generation (stage + E2E), pipeline orchestrator, fiscal-year resolution, API endpoints, streaming, upload parser, warm-up, Arq worker, CORS, auth, and issue-regression suites. The shared fixture env disables rate limiting and mocks/disconnects the stores.
+- **Fiscal-year integration regression** (`scripts/_fy_integration_regression.py`): asserts canonical year resolution, supplementary table injection counts, evidence figures, primary-model usage, and no refusal — passes E2E.
+- **E2E repros:** `scripts/_fy26_repro.py` traces retrieval → context → LLM → grounding for the FY2026 supplement; `Fix B` is validated against the real ingest path.
+- **Grounding / negative testing:** the E2E benchmark includes a refusal case (a ticker not in the corpus must be refused, not fabricated).
+- **Reranker equivalence:** FP16 vs FP32 top-8 overlap and Jaccard = 1.0 on 7 real queries; pipeline-context chunk lists bit-identical.
 
-### Ingestion results
-
-- Filing size: **8.96 MB**
-- Total chunks: **110**
-- Text chunks: **56**
-- Table chunks: **54**
-- Average text chunk size: **732 tokens**
-- Maximum text chunk size: **768 tokens**
-- Embeddings: **110 vectors**
-- Embedding runtime: approximately **42 seconds on CUDA**
-- GPU: **NVIDIA GeForce RTX 4050 Laptop GPU**
-- MongoDB: **110/110 chunks stored**
-- Qdrant: **110/110 vectors stored**
-- Best filtered retrieval score: **0.7913**
-- Structured log entries: **1144**
-
-### Generation E2E
-
-The complete generation integration was also verified using a real AAPL 10-K and live Groq API.
-
-The integration covered:
-
-1. Full ingestion
-2. Answerable financial questions
-3. Unanswerable questions
-4. Guardrail execution
-5. MLflow tracking
-
-The system correctly returned `"not available"` for an unanswerable exact-revenue query rather than inventing a figure.
+> The full native suite is not yet validated in the current working tree (see §Performance & Validation). Validation status is reported precisely rather than assuming green.
 
 ---
 
-# 19. Important Engineering Decisions
+## Security & Production Engineering
 
-## Dual storage
+**Implemented:**
+- **Authentication:** JWT (HS256) short-lived access token + HttpOnly refresh cookie; bcrypt password hashing; token revocation via Redis blacklist on logout; refresh rotation.
+- **Authorization (RBAC):** `require_roles(["admin"])` gates privileged mutations — admin user management, role updates, `/db/clear`, admin ingest, `DELETE /api/v1/cache`.
+- **Rate limiting:** slowapi with a dynamic key (authenticated `user:<id>` vs guest `ip:<host>`); structured 429 responses with rate-limit headers.
+- **Audit & observability:** structured JSON logs; full per-request Mongo `rag_audit_logs` (query, retrieved chunks, prompts, response, latency, guardrail, cache, model); HTTP middleware with request-id echo; analytics endpoint computing latency/cache-hit/guardrail percentiles.
+- **Configuration hygiene:** `.env` runtime keys are honoured (Mongo + Redis now map from their legacy names); JWT secret, model keys, and DB URIs are kept out of source; secret values are redacted throughout documentation.
+- **Resilience:** guarded fallbacks across LLM, reranker, cache, MLflow, and store outages (see §Engineering Highlights).
 
-MongoDB is treated as the raw-data source while Qdrant is responsible for vector retrieval.
+**Implemented but with known caveats (see §Known Limitations):** guest/optional authentication on the chat + upload + analytics endpoints (intended for the Streamlit client) and on the frontend `/chat/stream` call.
 
-This allows the retrieval layer and verification layer to remain separated.
-
-## Table atomicity
-
-Tables are isolated and preserved as complete chunks.
-
-This avoids breaking financial rows and headers across arbitrary chunk boundaries.
-
-## Metadata-aware retrieval
-
-Ticker and fiscal year can be used as retrieval filters.
-
-This helps constrain vector search to the intended financial context.
-
-## Model fallback
-
-The generation engine does not depend on a single LLM endpoint.
-
-A fallback model is activated when the primary model fails.
-
-## Structured output
-
-LLM responses are constrained to validated Pydantic schemas rather than being passed directly as arbitrary strings.
-
-## Numerical guardrails
-
-Financial numbers are checked after generation against the stored source data.
-
-## Exact-match caching
-
-Redis caching is intentionally based on normalized-query hashing rather than vector similarity.
-
-## Cache safety
-
-Only guardrail-approved responses are cached, preventing invalid responses from becoming persistent cached results.
-
-## Graceful degradation
-
-The pipeline includes safe fallback behavior for:
-
-- Empty retrieval
-- LLM failures
-- JSON parsing failures
-- Guardrail failures
+**Not implemented / planned:** multi-hop/agentic retrieval (see the [multi-hop roadmap](docs/MULTI_HOP_ROADMAP.md)).
 
 ---
 
-# 20. Engineering Issues Solved During Development
+## Known Limitations
 
-Several implementation issues were discovered and fixed during end-to-end integration.
+Honest, verified limitations (full list in **[Project Map §26](PROJECT_MAP.md#26-known-limitations-verified)**):
 
-### Chunk ID overwrite
-
-`upsert_chunks` originally allowed metadata expansion to overwrite `chunk_id`.
-
-The order of the metadata expansion was corrected.
-
-### CUDA execution
-
-The embedding engine was changed from automatic device detection to CUDA-forced execution with a CUDA availability assertion.
-
-### GPU memory
-
-Embedding batch size was reduced from `64` to `32` for the 6 GB VRAM environment, with explicit CUDA cache cleanup.
-
-### Table token limits
-
-Tables were exempted from the normal 768-token constraint so that financial tables could remain atomic.
-
-### Qdrant cleanup
-
-The Qdrant client is closed before test-directory cleanup to avoid `.lock` permission errors.
-
-### Missing guardrail helper
-
-`async_guardrail.py` depended on `_hash_query()` from another module.
-
-A local implementation was added to prevent runtime failure when Redis was available.
-
-### Qdrant text assumption
-
-The implementation identified that Qdrant payloads did not contain `raw_text`.
-
-The retrieval pipeline therefore explicitly fetches the corresponding text from MongoDB.
-
-### Table placeholders
-
-Text chunks can contain `%%TABLE_N%%` placeholders while the actual financial figures exist in separate table chunks.
-
-The integration verified that the system does not invent exact values when the required table context is absent.
-
-### Model availability
-
-The primary Groq model was updated after the previous `qwen-2.5-72b-instruct` model became unavailable.
-
-The current primary is:
-
-```text
-llama-3.3-70b-versatile
-```
-
-with:
-
-```text
-qwen/qwen3.6-27b
-```
-
-as fallback.
+1. **Streaming is word-granular at best.** Groq's JSON mode coalesces output; the API emits decoded-word SSE events, not true token-level text.
+2. **Guardrail is self-consistency only.** It verifies answer numbers against the model's own `extracted_raw_data` — it does **not** re-query MongoDB raw text and performs **no arithmetic**.
+3. **Session memory is not concurrency-safe** and is RAM-only (lost on restart). The API swaps a single shared generator's message list per request without a lock.
+4. **Bare years are unsupported.** A query of just `"2025"` (no `FY`/`fiscal`) does not drive filtering; plural/complex fiscal phrases are unsupported. Multi-year comparison queries resolve to the max year by design.
+5. **Re-ingestion is not convergent.** Upserts are idempotent per `chunk_id`, but stale ids are never deleted — orphaned/duplicate chunks persist until a full `--reset`.
+6. **Pre-retrieval is disabled and buggy.** The intent-routing/query-expansion layer (`ENABLE_PRE_RETRIEVAL=False`) raises `UnboundLocalError` on its sync path if enabled.
+7. **Some API responsibilities are hard-coded.** `guardrail_status` in the sync `/chat` response is a fixed `passed=True` (the real result only in audit logs); `/health` probes an in-code Mongo URI; an in-memory `_INGESTION_TASKS` map loses task state on restart.
+8. **`.env` keys are only partially reconciled.** Legacy Mongo and Redis names are now honoured; `QDRANT_URL` and `MLFLOW_TRACKING_URI` are still unread.
+9. **Frontend gaps.** Overview/Comparison and some upload rows are mock data; `documents`/`admin_logs` tabs are stubs; the SPA calls `/chat/stream` without an Authorization header; auth endpoints are not rate-limited; the embedded model has a hard CUDA assert (no CPU fallback); a dev JWT secret fallback exists.
+10. **Validation is partial.** The current working tree is uncommitted WIP; the full native test suite is not yet validated, and the Version 7 quality-gate scores are historical.
 
 ---
 
-# 21. Module Status
+## Future Roadmap
 
-| Module | Status |
-|---|---|
-| Module 1 — Ingestion Pipeline | ✅ COMPLETE |
-| Module 2 — Generation Engine | ✅ COMPLETE |
-| Module 1+2 E2E Integration | ✅ VERIFIED |
-| Module 3a — Pipeline Orchestrator | ✅ COMPLETE |
-| Module 3b — FastAPI Backend | ✅ COMPLETE |
-| Module 3c — Streamlit UI | ✅ COMPLETE |
-| Module 3d — Deployment | ⏳ PENDING |
+Realistic, current-direction improvements (not yet implemented):
 
----
-
-# 22. Current System Flow
-
-The complete production-oriented flow can be summarized as:
-
-```text
-                         ┌─────────────────────┐
-                         │     SEC Filing      │
-                         └──────────┬──────────┘
-                                    │
-                                    ▼
-                         ┌─────────────────────┐
-                         │ Parse & Clean       │
-                         │ HTML / Tables       │
-                         └──────────┬──────────┘
-                                    │
-                                    ▼
-                         ┌─────────────────────┐
-                         │ Metadata Extraction │
-                         └──────────┬──────────┘
-                                    │
-                                    ▼
-                         ┌─────────────────────┐
-                         │ Hybrid Chunking     │
-                         │ Section + Tables    │
-                         │ + Token Boundaries  │
-                         └──────────┬──────────┘
-                                    │
-                         ┌──────────┴──────────┐
-                         ▼                     ▼
-                  ┌─────────────┐       ┌─────────────┐
-                  │  MongoDB    │       │   Qdrant    │
-                  │ Raw + Meta  │       │  Vectors    │
-                  └──────┬──────┘       └──────┬──────┘
-                         │                     │
-                         │              ┌──────▼──────┐
-                         │              │ Vector      │
-                         │              │ Retrieval   │
-                         │              └──────┬──────┘
-                         │                     │
-                         └──────────┬──────────┘
-                                    ▼
-                         ┌─────────────────────┐
-                         │ Context Assembly    │
-                         └──────────┬──────────┘
-                                    │
-                                    ▼
-                         ┌─────────────────────┐
-                         │ Groq LLM Generation │
-                         │ Primary + Fallback  │
-                         └──────────┬──────────┘
-                                    │
-                                    ▼
-                         ┌─────────────────────┐
-                         │ Pydantic Validation │
-                         └──────────┬──────────┘
-                                    │
-                                    ▼
-                         ┌─────────────────────┐
-                         │ Numerical Guardrail │
-                         └──────────┬──────────┘
-                                    │
-                           ┌────────┴────────┐
-                           ▼                 ▼
-                         PASS              FAIL
-                           │                 │
-                           ▼                 ▼
-                    Redis Cache       Safe Fallback
-                           │
-                           ▼
-                 ConsolidatedFinancialAnswer
-```
+- **Multi-hop / agentic retrieval** for complex multi-step financial questions (see [`docs/MULTI_HOP_ROADMAP.md`](docs/MULTI_HOP_ROADMAP.md), PLANNED).
+- **Convergent re-ingestion** (delete-by-prefix) so re-chunking never orphans chunks.
+- **Ground-truth guardrails** that verify figures against raw document text (and optionally arithmetic), not just self-consistency.
+- **True token-level streaming** (working around provider JSON coalescing).
+- **Full native-suite validation** for the current working tree, including the FP16 reranker under load.
+- **Hardening** the remaining security gaps: rate-limit the auth endpoints, attach the JWT to the frontend stream call, and replace the dev secret in real deployments.
 
 ---
 
-# 23. What Makes This More Than a Basic RAG
+## Documentation
 
-This project intentionally goes beyond the minimal RAG pattern:
+- **[PROJECT_MAP.md](PROJECT_MAP.md)** — the authoritative, code-verified architecture reference (30 sections + diagrams + verified-behavior tables). Read this for deep detail; it is the source of truth for everything summarized here.
+- **[FP16 reranker report](artifacts/ab2_benchmark/fp16_impl_report.md)** — problem/decision/result plus reproduction for the FP16 optimization.
+- **[Evaluation summary](artifacts/EVALUATION_SUMMARY.md)** — recorded Version 7 quality-gate results (labeled historical — not re-run against the current tree).
+- **[Multi-hop roadmap](docs/MULTI_HOP_ROADMAP.md)** — planned agentic capability.
+- `docs/` — forensic audit write-ups (`AUDIT_*.md`, `SUBSET_AUDIT_REPORT.md`, `SYSTEM_AUDIT_REPORT.md`).
 
-```text
-Basic RAG
----------
-Documents
-   ↓
-Chunks
-   ↓
-Embeddings
-   ↓
-Vector Search
-   ↓
-LLM
-```
-
-The implemented system adds multiple engineering layers around that core:
-
-```text
-Financial RAG
-──────────────────────────────────────────────
-Document Parsing
-      ↓
-Financial Cleaning
-      ↓
-Metadata Extraction
-      ↓
-Structure-Aware Hybrid Chunking
-      ↓
-Dual Storage
-      ↓
-Metadata-Aware Vector Retrieval
-      ↓
-MongoDB Context Enrichment
-      ↓
-Conversation Memory
-      ↓
-LLM Fallback + Retry
-      ↓
-Strict Structured Output
-      ↓
-Numerical Guardrail
-      ↓
-Cache Validation
-      ↓
-Redis Exact-Match Cache
-      ↓
-MLflow + Structured Observability
-      ↓
-FastAPI
-      ↓
-Streaming
-      ↓
-Streamlit Dashboard
-      ↓
-Automated Testing
-```
-
-The project therefore focuses not only on retrieval quality, but also on **data integrity, failure handling, observability, validation, API serving, caching, testing, and operational behavior**.
+This README is the high-level entry point; **[PROJECT_MAP.md](PROJECT_MAP.md)** contains the deeper architectural detail.
 
 ---
 
-# 24. Project Maturity
+## Author
 
-The project currently reaches a complete implemented state across:
-
-- Ingestion
-- Chunking
-- Embedding
-- Indexing
-- Retrieval
-- Generation
-- Guardrails
-- Caching
-- Observability
-- API
-- UI
-- Testing
-
-The remaining project-map stage is:
-
-```text
-Deployment → PENDING
-```
-
----
-
-## Status
-
-```text
-Project: Financial_RAG
-Implementation: COMPLETE
-Unit Tests: 148/148 PASSING
-Streamlit UI Tests: 17/17 PASSING
-E2E Ingestion: VERIFIED
-E2E Generation: VERIFIED
-Deployment: NEXT
-```
-
----
-
-## License
-
-No license information is defined in the project map.
+**Youssef** — AI Engineering • RAG Systems • Data Science
