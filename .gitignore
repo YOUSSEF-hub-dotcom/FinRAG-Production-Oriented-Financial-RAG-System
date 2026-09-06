@@ -23,7 +23,6 @@ artifacts/
 data/
 mongodb_data/
 backups/
-results/
 tmp/
 *.pdf
 *.csv
