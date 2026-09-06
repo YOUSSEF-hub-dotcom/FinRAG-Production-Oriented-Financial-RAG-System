@@ -25,7 +25,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 sys.path.insert(0, str(_PROJECT_ROOT / "src"))
 sys.path.insert(0, str(_PROJECT_ROOT / "src" / "1_ingestion"))
-sys.path.insert(0, str(_PROJECT_ROOT / "src" / "2_generation"))
+sys.path.insert(0, str(_PROJECT_ROOT / "src" / "5_generation"))
 
 from schemas import ConsolidatedFinancialAnswer
 
@@ -91,7 +91,7 @@ def _make_gen_result(parsed: ConsolidatedFinancialAnswer | None = None) -> dict[
             "sources": ["AAPL - 2025 - Business Overview - 10"],
         }),
         "parsed": parsed or _make_parsed_answer(),
-        "model_used": "llama-3.3-70b-versatile",
+        "model_used": "openai/gpt-oss-20b",
         "fallback_triggered": False,
         "ttft_ms": 234.5,
     }
@@ -222,7 +222,7 @@ class TestCacheMiss:
         result = pipeline.query("What are Apple's reportable segments?")
 
         assert result["parsed"] is not None
-        assert result["model_used"] == "llama-3.3-70b-versatile"
+        assert result["model_used"] == "openai/gpt-oss-20b"
         assert result["fallback_triggered"] is False
         assert result["cache_hit"] is False
 
@@ -368,7 +368,7 @@ class TestStreaming:
     """Verify streaming yields tokens correctly."""
 
     def test_stream_returns_async_iterator(self, pipeline, mock_components):
-        async def mock_stream(query, retrieved_docs):
+        async def mock_stream(query, retrieved_docs, **kwargs):
             yield "token1"
             yield "token2"
             yield "token3"
@@ -456,3 +456,104 @@ class TestMemoryReset:
     def test_reset_memory_calls_generator(self, pipeline, mock_components):
         pipeline.reset_memory()
         mock_components["generator"].reset_memory.assert_called_once()
+
+
+# ============================================================================
+# TEST: Memory Coreference Resolution (legacy flow)
+# ============================================================================
+
+class _Msg:
+    def __init__(self, type_, content):
+        self.type = type_
+        self.content = content
+
+class _Mem:
+    def __init__(self, msgs):
+        self.messages = msgs
+
+class _Gen:
+    def __init__(self, msgs):
+        self._memory = _Mem(msgs)
+
+def _coref_pipeline(history: list[str]):
+    """Lightweight pipeline instance with a generator holding prior turns."""
+    from pipeline import FinancialRAGPipeline
+    p = FinancialRAGPipeline.__new__(FinancialRAGPipeline)
+    p._enable_pre_retrieval = False
+    p._generator = _Gen([_Msg("user", c) for c in history])
+    return p
+
+
+class TestMemoryCoreference:
+    """Verify single-company coreference is resolved in the legacy (pre-retrieval
+    disabled) flow so follow-up memory turns scope to the right company + year."""
+
+    def test_first_company_session_a(self):
+        p = _coref_pipeline([
+            "Compare the operating margins and total net revenue between Apple, Microsoft, and NVIDIA for FY2025."
+        ])
+        out = p._resolve_memory_coreference(
+            "How much did the first company spend on Research and Development in that same fiscal year?",
+            "ALL", None)
+        assert out is not None
+        assert out["ticker"] == "AAPL"
+        assert out["fiscal_year"] == "2025"
+
+    def test_second_company_session_a(self):
+        p = _coref_pipeline([
+            "Compare the operating margins and total net revenue between Apple, Microsoft, and NVIDIA for FY2025."
+        ])
+        out = p._resolve_memory_coreference(
+            "How much did the second company spend on Research and Development?", "ALL", None)
+        assert out["ticker"] == "MSFT"
+        assert out["fiscal_year"] == "2025"
+
+    def test_third_company_session_a(self):
+        p = _coref_pipeline([
+            "Compare the operating margins and total net revenue between Apple, Microsoft, and NVIDIA for FY2025."
+        ])
+        out = p._resolve_memory_coreference("What about the third company?", "ALL", None)
+        assert out["ticker"] == "NVDA"
+        assert out["fiscal_year"] == "2025"
+
+    def test_session_b_entity_order_nvidia_first(self):
+        p = _coref_pipeline([
+            "Compare the operating margins and total net revenue between NVIDIA, Microsoft, and Apple for FY2025."
+        ])
+        out = p._resolve_memory_coreference("What did the first company report?", "ALL", None)
+        assert out["ticker"] == "NVDA"
+        assert out["fiscal_year"] == "2025"
+
+    def test_its_revenue_resolves_subject_and_year(self):
+        p = _coref_pipeline(["What is Apple's net income for FY2025?"])
+        out = p._resolve_memory_coreference("What is its revenue?", "AAPL", None)
+        assert out["ticker"] == "AAPL"
+        assert out["fiscal_year"] == "2025"
+
+    def test_inherits_year_2024_from_history(self):
+        p = _coref_pipeline(["What is Apple's net income for FY2024?"])
+        out = p._resolve_memory_coreference("What is its revenue?", "AAPL", None)
+        assert out["ticker"] == "AAPL"
+        assert out["fiscal_year"] == "2024"
+
+    def test_plain_query_is_unchanged(self):
+        p = _coref_pipeline(["What is Apple's net income for FY2025?"])
+        out = p._resolve_memory_coreference(
+            "What was Apple's total revenue in FY2025?", "AAPL", None)
+        assert out is None
+
+    def test_no_history_returns_none(self):
+        p = _coref_pipeline([])
+        out = p._resolve_memory_coreference("What is its revenue?", "AAPL", None)
+        assert out is None
+
+    def test_disabled_when_pre_retrieval_active(self, mock_components):
+        from pipeline import FinancialRAGPipeline
+        p = FinancialRAGPipeline(
+            qdrant_path="/tmp/test_qdrant", mongo_db="test_db",
+            mongo_collection="test_collection", qdrant_collection="test_vectors",
+            top_k=5, enable_cache=True, enable_guardrail=True,
+            enable_pre_retrieval=True,
+        )
+        assert p._enable_pre_retrieval is True
+        assert p._resolve_memory_coreference("What is its revenue?", "AAPL", None) is None

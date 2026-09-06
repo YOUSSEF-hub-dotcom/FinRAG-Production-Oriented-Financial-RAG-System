@@ -1,0 +1,17 @@
+=== NVDA_tbl_bf56f12bfafa_0059 ===
+ticker: NVDA fiscal_year: '2025' section: Part IV source_file: full-submission.txt
+raw_text: | Unnamed: 0                 | Unnamed: 1                 | Unnamed: 2                 | Unnamed: 3    | Unnamed: 4    | Unnamed: 5    | Unnamed: 6    | Unnamed: 7    | Unnamed: 8    | Unnamed: 9    | Unnamed: 10   | Unnamed: 11   | Unnamed: 12   | Unnamed: 13   | Unnamed: 14   | Unnamed: 15   | Unnamed: 16   | Unnamed: 17   |
+|:---------------------------|:---------------------------|:---------------------------|:--------------|:--------------|:--------------|:--------------|:--------------|:--------------|:--------------|:--------------|:--------------|:--------------|:--------------|:------
+
+=== ALL NVDA chunks by fiscal_year + source_file ===
+years: {'2025': 183, '2026': 180, 'UNKNOWN': 1}
+sources: {'full-submission.txt': 363, 'NVDA_AI_Infrastructure_Expansion_FY2026.pdf': 1}
+
+=== NVDA chunks with fiscal_year FY2026 or 2026 ===
+{'ticker': 'NVDA', 'fiscal_year': '2026'} -> 180
+    NVDA_tbl_70910f0bdb90_0000 full-submission.txt General
+    NVDA_tbl_441edb77d0dc_0001 full-submission.txt General
+    NVDA_tbl_c37fc5cdaa97_0002 full-submission.txt General
+    NVDA_tbl_03bfe88cb67a_0003 full-submission.txt General
+    NVDA_tbl_484e4ae6a9ab_0004 full-submission.txt General
+{'ticker': 'NVDA', 'fiscal_year': 'FY2026'} -> 0

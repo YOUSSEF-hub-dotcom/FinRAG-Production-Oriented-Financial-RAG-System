@@ -44,8 +44,14 @@ _MULTI_BLANK = re.compile(r"\n{3,}")
 
 # SEC boilerplate footer/header markers
 _SEC_BOILERPLATE = re.compile(
-    r"(?:(?:Filing\s+Date|Filed\s+on|Date\s+of\s+Event|Document\s+Center|"
-    r"EDGAR\s+Filing|Accession\s+Number|Submitter|Contact)[^\n]*)",
+    r"(?:"
+    r"(?:^|(?<=\s))(?:Filed\s+on|Date\s+of\s+Event(?:\s+Date)?|Accession\s+Number|"
+    r"Submission\s+Type|Public\s+Document\s+Count|Filer\s+)[\s:]+[\w\d.,\-/() ]{3,60}"
+    r"|"
+    r"(?:Document\s+Center|EDGAR\s+Filing|Submitter\s*:)[^\n]{0,80}"
+    r"|"
+    r"\b(?:Filing\s+Date|Contact\s+Information)\s*[:\-]\s*[^\n]{0,80}"
+    r")",
     re.IGNORECASE,
 )
 

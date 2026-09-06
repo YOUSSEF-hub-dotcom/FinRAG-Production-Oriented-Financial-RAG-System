@@ -1,0 +1,44 @@
+boot pipeline ... 1788521244.3
+post_retrieval table_shield clean_enabled=False
+reranker device=cuda batch=32 top_n=8
+fetch real multi-ticker chunks ... 1788521252.2
+fetched 24 chunks in 78.6s, tickers={'AAPL': 8, 'MSFT': 8, 'NVDA': 8}
+
+[PART3] BASELINE real 24 pairs batch=32 dummy_warm
+TYPE pred_scores 24 mean=7948.1 med=7588.7 min=2407.3 max=13673.1
+baseline top8 evidence=A:FalseAo:FalseM:FalseN:Falsetbl:True
+baseline top8 ticker balance={'NVDA': 5, 'MSFT': 3}
+
+[PART4] BATCH SIZE SWEEP same 24 pairs
+BATCH 8  mean=2550.7 med=2549.7 min=2545.2 max=2558.0  mem_resv=3812MB
+BATCH 16  mean=2576.7 med=2560.7 min=2515.5 max=2669.8  mem_resv=3812MB
+BATCH 32  mean=2575.7 med=2568.9 min=2536.4 max=2628.5  mem_resv=3812MB
+BATCH 64  mean=2533.5 med=2535.4 min=2519.3 max=2543.9  mem_resv=3812MB
+
+[PART5] CANDIDATE COUNT SWEEP (production batch=32, real chunks)
+CAND 12  mean=1282.8 med=1289.4 min=1260.2 max=1292.3  ev_top8=A:FalseAo:FalseM:FalseN:Falsetbl:False
+CAND 16  mean=1723.6 med=1724.1 min=1719.8 max=1726.5  ev_top8=A:FalseAo:FalseM:FalseN:Falsetbl:False
+CAND 20  mean=2182.5 med=2182.4 min=2176.0 max=2189.2  ev_top8=A:FalseAo:FalseM:FalseN:Falsetbl:True
+CAND 24  mean=2515.2 med=2513.4 min=2505.9 max=2528.2  ev_top8=A:FalseAo:FalseM:FalseN:Falsetbl:True
+
+[PART6/7] RANKING STABILITY top8 vs baseline (aligned by real chunk order)
+baseline final top8:
+  1. NVDA_tbl_bf56f12bfafa_0059 [NVDA] score=0.8063
+  2. NVDA_txt_e8ce816e8319_0105 [NVDA] score=0.3595
+  3. MSFT_txt_c240af50bdad_0078 [MSFT] score=0.3007
+  4. NVDA_txt_88e1cd8ff7f3_0067 [NVDA] score=0.2389
+  5. MSFT_txt_2982f6a4d0e5_0079 [MSFT] score=0.1933
+  6. NVDA_txt_73bb5e2ae4d8_0111 [NVDA] score=0.1799
+  7. NVDA_txt_7db195dbc7c3_0104 [NVDA] score=0.1444
+  8. MSFT_txt_0524742907ad_0082 [MSFT] score=0.1382
+cand=12 overlap_top8_with_baseline=2/8 dropped=['NVDA_tbl_bf56f12bfafa_0059', 'NVDA_txt_e8ce816e8319_0105', 'NVDA_txt_88e1cd8ff7f3_0067', 'MSFT_txt_2982f6a4d0e5_0079', 'NVDA_txt_73bb5e2ae4d8_0111', 'NVDA_txt_7db195dbc7c3_0104']
+cand=16 overlap_top8_with_baseline=3/8 dropped=['NVDA_tbl_bf56f12bfafa_0059', 'NVDA_txt_e8ce816e8319_0105', 'NVDA_txt_88e1cd8ff7f3_0067', 'NVDA_txt_73bb5e2ae4d8_0111', 'NVDA_txt_7db195dbc7c3_0104']
+cand=20 overlap_top8_with_baseline=6/8 dropped=['NVDA_txt_e8ce816e8319_0105', 'NVDA_txt_73bb5e2ae4d8_0111']
+
+[PART9] STAGE BREAKDOWN on real top-8
+CrossEncoder.predict(24)  mean=2513.5 med=2513.5 min=2511.8 max=2515.3
+TableShield.shield(8)     0.7 ms
+Cylinder reorder(8)       0.3 ms
+aprocess_scored post(no pred, incl rescue+shield+cylinder)  3.7 ms
+TableShield clean_enabled=False  (False => passthrough, no LLM)
+PREDICT_ONLY(sum)=2513.5  POSTONLY(no predict)=3.7

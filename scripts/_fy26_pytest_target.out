@@ -1,0 +1,846 @@
+................F.............F......................................... [ 78%]
+.....FF.............                                                     [100%]
+=================================== FAILURES ===================================
+___________ TestCacheMiss.test_generator_called_with_retrieved_docs ____________
+
+self = <test.test_pipeline_orchestrator.TestCacheMiss object at 0x7f8de3922510>
+pipeline = <pipeline.FinancialRAGPipeline object at 0x7f8de0c1ae40>
+mock_components = {'embed': <MagicMock name='EmbeddingEngine()' id='140247338310768'>, 'qdrant': <MagicMock name='QdrantIndexer()' id='1...oDBIndexer()' id='140247338378944'>, 'generator': <MagicMock name='FinancialRAGGenerator()' id='140247338406768'>, ...}
+
+    def test_generator_called_with_retrieved_docs(self, pipeline, mock_components):
+        pipeline.query("What is Apple's revenue?")
+    
+        mock_components["generator"].generate.assert_called_once()
+        call_kwargs = mock_components["generator"].generate.call_args[1]
+        assert call_kwargs["query"] == "What is Apple's revenue?"
+>       assert len(call_kwargs["retrieved_docs"]) == 3
+E       AssertionError: assert 1 == 3
+E        +  where 1 = len([{'text': 'Apple Inc. is a global technology company. Chunk chunk_000 with detailed financial information about fiscal..._year': '2025', 'section': 'Business Overview', 'contains_table': False, ...}, 'chunk_id': 'chunk_000', 'score': 0.85}])
+
+test/test_pipeline_orchestrator.py:252: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+{"timestamp": "2026-09-05T16:24:43.976548+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "__init__", "line": 465, "message": "FinancialRAGPipeline initialized: primary=openai/gpt-oss-120b fallback=openai/gpt-oss-20b top_k=5 cache=True guardrail=True pre_retrieval=False hybrid_retrieval=False             post_retrieval=False"}
+------------------------------ Captured log setup ------------------------------
+INFO     pipeline.orchestrator:pipeline.py:465 FinancialRAGPipeline initialized: primary=openai/gpt-oss-120b fallback=openai/gpt-oss-20b top_k=5 cache=True guardrail=True pre_retrieval=False hybrid_retrieval=False             post_retrieval=False
+----------------------------- Captured stdout call -----------------------------
+{"timestamp": "2026-09-05T16:24:43.978749+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "query", "line": 1642, "message": "Pipeline query started: id=7bcefaa9 ticker=None year=None"}
+{"timestamp": "2026-09-05T16:24:43.987347+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "_enrich_documents", "line": 639, "message": "Retrieved 3/3 documents (Qdrant: 3, MongoDB enriched: 3)"}
+{"timestamp": "2026-09-05T16:24:43.987799+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "_resolve_table_placeholders", "line": 758, "message": "Table placeholder resolution: 0/3 documents carried placeholders"}
+{"timestamp": "2026-09-05T16:24:43.991331+00:00", "level": "WARNING", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "_augment_context", "line": 1354, "message": "No financial-statement tables for AAPL FY2025; its figures will be absent from the cross-company context"}
+{"timestamp": "2026-09-05T16:24:43.991692+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "_augment_context", "line": 1518, "message": "Context prepared: 1 documents, 590 chars (budget=12000)"}
+{"timestamp": "2026-09-05T16:24:43.992235+00:00", "level": "WARNING", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "query", "line": 2008, "message": "Guardrail check failed (non-blocking): An asyncio.Future, a coroutine or an awaitable is required"}
+------------------------------ Captured log call -------------------------------
+INFO     pipeline.orchestrator:pipeline.py:1642 Pipeline query started: id=7bcefaa9 ticker=None year=None
+INFO     pipeline.orchestrator:pipeline.py:639 Retrieved 3/3 documents (Qdrant: 3, MongoDB enriched: 3)
+INFO     pipeline.orchestrator:pipeline.py:758 Table placeholder resolution: 0/3 documents carried placeholders
+WARNING  pipeline.orchestrator:pipeline.py:1354 No financial-statement tables for AAPL FY2025; its figures will be absent from the cross-company context
+INFO     pipeline.orchestrator:pipeline.py:1518 Context prepared: 1 documents, 590 chars (budget=12000)
+WARNING  pipeline.orchestrator:pipeline.py:2008 Guardrail check failed (non-blocking): An asyncio.Future, a coroutine or an awaitable is required
+_________________ TestMLflowLogging.test_mlflow_metrics_logged _________________
+
+self = <test.test_pipeline_orchestrator.TestMLflowLogging object at 0x7f8de3963500>
+pipeline = <pipeline.FinancialRAGPipeline object at 0x7f8de0b745f0>
+mock_components = {'embed': <MagicMock name='EmbeddingEngine()' id='140247335490032'>, 'qdrant': <MagicMock name='QdrantIndexer()' id='1...oDBIndexer()' id='140247337391152'>, 'generator': <MagicMock name='FinancialRAGGenerator()' id='140247337818096'>, ...}
+
+    def test_mlflow_metrics_logged(self, pipeline, mock_components):
+        pipeline.query("Revenue?")
+    
+        import mlflow
+>       mlflow.log_metric.assert_any_call("documents_retrieved", 3)
+
+test/test_pipeline_orchestrator.py:418: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <MagicMock name='log_metric' id='140247335494256'>
+args = ('documents_retrieved', 3), kwargs = {}
+
+    def assert_any_call(self, /, *args, **kwargs):
+        """assert the mock has been called with the specified arguments.
+    
+        The assert passes if the mock has *ever* been called, unlike
+        `assert_called_with` and `assert_called_once_with` that only pass if
+        the call is the most recent one."""
+        expected = self._call_matcher(_Call((args, kwargs), two=True))
+        cause = expected if isinstance(expected, Exception) else None
+        actual = [self._call_matcher(c) for c in self.call_args_list]
+        if cause or expected not in _AnyComparer(actual):
+            expected_string = self._format_mock_call_signature(args, kwargs)
+>           raise AssertionError(
+                '%s call not found' % expected_string
+            ) from cause
+E           AssertionError: log_metric('documents_retrieved', 3) call not found
+
+/usr/lib/python3.12/unittest/mock.py:1015: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+{"timestamp": "2026-09-05T16:24:44.916326+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "__init__", "line": 465, "message": "FinancialRAGPipeline initialized: primary=openai/gpt-oss-120b fallback=openai/gpt-oss-20b top_k=5 cache=True guardrail=True pre_retrieval=False hybrid_retrieval=False             post_retrieval=False"}
+------------------------------ Captured log setup ------------------------------
+INFO     pipeline.orchestrator:pipeline.py:465 FinancialRAGPipeline initialized: primary=openai/gpt-oss-120b fallback=openai/gpt-oss-20b top_k=5 cache=True guardrail=True pre_retrieval=False hybrid_retrieval=False             post_retrieval=False
+----------------------------- Captured stdout call -----------------------------
+{"timestamp": "2026-09-05T16:24:44.918411+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "query", "line": 1642, "message": "Pipeline query started: id=ff611c6a ticker=None year=None"}
+{"timestamp": "2026-09-05T16:24:44.921434+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "_enrich_documents", "line": 639, "message": "Retrieved 3/3 documents (Qdrant: 3, MongoDB enriched: 3)"}
+{"timestamp": "2026-09-05T16:24:44.921822+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "_resolve_table_placeholders", "line": 758, "message": "Table placeholder resolution: 0/3 documents carried placeholders"}
+{"timestamp": "2026-09-05T16:24:44.922913+00:00", "level": "WARNING", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "_augment_context", "line": 1354, "message": "No financial-statement tables for AAPL FY2025; its figures will be absent from the cross-company context"}
+{"timestamp": "2026-09-05T16:24:44.923383+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "_augment_context", "line": 1518, "message": "Context prepared: 1 documents, 590 chars (budget=12000)"}
+{"timestamp": "2026-09-05T16:24:44.924582+00:00", "level": "WARNING", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "query", "line": 2006, "message": "Guardrail check failed (non-blocking): a coroutine was expected, got {'passed': True, 'verified_claims': ['167.0'], 'failed_claims': [], 'final_output': 'Answer verified.', 'cache_written': True, 'detail': 'OK'}"}
+------------------------------ Captured log call -------------------------------
+INFO     pipeline.orchestrator:pipeline.py:1642 Pipeline query started: id=ff611c6a ticker=None year=None
+INFO     pipeline.orchestrator:pipeline.py:639 Retrieved 3/3 documents (Qdrant: 3, MongoDB enriched: 3)
+INFO     pipeline.orchestrator:pipeline.py:758 Table placeholder resolution: 0/3 documents carried placeholders
+WARNING  pipeline.orchestrator:pipeline.py:1354 No financial-statement tables for AAPL FY2025; its figures will be absent from the cross-company context
+INFO     pipeline.orchestrator:pipeline.py:1518 Context prepared: 1 documents, 590 chars (budget=12000)
+WARNING  pipeline.orchestrator:pipeline.py:2006 Guardrail check failed (non-blocking): a coroutine was expected, got {'passed': True, 'verified_claims': ['167.0'], 'failed_claims': [], 'final_output': 'Answer verified.', 'cache_written': True, 'detail': 'OK'}
+_______ TestPipelinePreRetrieval.test_route2_general_bypasses_retrieval ________
+
+self = <test.test_3_pre_retrieval.TestPipelinePreRetrieval object at 0x7f8de39829f0>
+m3_pipeline = {'pipeline': <pipeline.FinancialRAGPipeline object at 0x7f8de0b26090>, 'orchestrator': <MagicMock name='PreRetrievalOr...antIndexer()' id='140247336422816'>, 'generator': <MagicMock name='FinancialRAGGenerator()' id='140247338267856'>, ...}
+
+    def test_route2_general_bypasses_retrieval(self, m3_pipeline):
+        orch = m3_pipeline["orchestrator"]
+        _set_route(orch, PreRetrievalResult(
+            queries=[], metadata_filter={}, is_safe=True,
+            action="GENERAL", standalone_query="Hi!",
+        ))
+>       m3_pipeline["pipeline"].query("Hi!")
+
+test/test_3_pre_retrieval.py:464: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <pipeline.FinancialRAGPipeline object at 0x7f8de0b26090>
+user_query = 'Hi!', ticker = None, fiscal_year = None, session_id = None
+top_k = 3, tickers = None
+
+    def query(
+        self,
+        user_query: str,
+        ticker: Optional[str] = None,
+        fiscal_year: Optional[str] = None,
+        session_id: Optional[str] = None,
+        top_k: int = 3,
+        tickers: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """
+        Execute a full RAG query end-to-end.
+    
+        Steps:
+            1. Cache check — return instantly on Redis hit
+            2. Vector retrieval from Qdrant + MongoDB enrichment
+            3. XML context formatting
+            4. LLM generation via primary/fallback Groq models
+            5. Background async guardrail verification + cache write
+            6. MLflow logging of end-to-end metrics
+    
+        Args:
+            user_query: Natural language financial question.
+            ticker: Optional ticker filter (e.g. 'AAPL').
+            fiscal_year: Optional fiscal year filter (e.g. '2025').
+            session_id: Optional session identifier for conversation memory.
+            top_k: Number of documents to retrieve.
+    
+        Returns:
+            ConsolidatedFinancialAnswer dict with validated JSON response.
+        """
+        pipeline_run_id = str(uuid.uuid4())[:8]
+        t_start = time.time()
+    
+        logger.info(
+            "Pipeline query started: id=%s ticker=%s year=%s",
+            pipeline_run_id,
+            ticker,
+            fiscal_year,
+        )
+    
+        # Start MLflow run
+        mlflow_active = False
+        try:
+            mlflow.set_experiment("financial_rag_pipeline")
+            mlflow.start_run(run_name=f"pipeline_{pipeline_run_id}", nested=True)
+            mlflow.log_param("query", user_query[:200])
+            mlflow.log_param("ticker", ticker or "ANY")
+            mlflow.log_param("fiscal_year", fiscal_year or "ANY")
+            mlflow.log_param("top_k", top_k)
+            mlflow_active = True
+        except Exception as exc:
+            logger.warning("MLflow pipeline run start failed (non-blocking): %s", exc)
+    
+        result: dict[str, Any] | None = None
+        started_guardrail = False
+        try:
+            # Step 1: Cache check
+            if self._enable_cache and self._cache is not None:
+                cached = self._cache.get(
+                    user_query, ticker=ticker, fiscal_year=fiscal_year
+                )
+                if cached is not None:
+                    logger.info("Cache HIT for pipeline query (id=%s)", pipeline_run_id)
+                    if mlflow_active:
+                        try:
+                            mlflow.log_metric("cache_hit", 1)
+                            mlflow.log_metric("e2e_latency_ms", round((time.time() - t_start) * 1000, 2))
+                        except Exception:
+                            pass
+                    result = {
+                        "raw_output": cached.get("answer_json", ""),
+                        "parsed": None,
+                        "model_used": "cache",
+                        "fallback_triggered": False,
+                        "ttft_ms": 0,
+                        "cache_hit": True,
+                        "pipeline_run_id": pipeline_run_id,
+                    }
+                    try:
+                        from schemas import ConsolidatedFinancialAnswer
+                        result["parsed"] = ConsolidatedFinancialAnswer.model_validate_json(
+                            cached.get("answer_json", "")
+                        )
+                    except Exception:
+                        result["parsed"] = None
+                    return result
+    
+            # Step 2: Pre-Retrieval (Module 3) -- optional intent routing
+            pr_route = "DEFAULT"
+            skip_cache_override = False
+    
+            # Explicit cross-entity scope requested by the client (e.g. the
+            # frontend "ALL - Cross-Entity" ticker option, or "ALL" passed in
+            # the ``tickers`` list). When set, retrieval must span EVERY
+            # ingested filing rather than the single collection implied by the
+            # active company selector -- this is what unblocks cross-ticker
+            # comparison prompts that previously collapsed to one company and
+            # returned "information not available".
+            all_companies = (bool(ticker) and ticker.upper() == "ALL") or any(
+                bool(t) and t.upper() == "ALL" for t in (tickers or [])
+            )
+    
+            if self._enable_pre_retrieval and self._pre_retrieval is not None:
+                pr = self._pre_retrieval.process(user_query, history=self._get_conversation_history())
+    
+                # Route 1: security violation -- halt immediately, no GPU spend
+                if not pr.is_safe:
+                    logger.warning(
+                        "Security violation blocked (id=%s): %r",
+                        pipeline_run_id,
+                        user_query[:80],
+                    )
+                    if mlflow_active:
+                        try:
+                            mlflow.log_param("pre_retrieval_route", "BLOCKED")
+                            mlflow.log_metric("documents_retrieved", 0)
+                            mlflow.log_metric("cache_hit", 0)
+                            mlflow.log_metric(
+                                "e2e_latency_ms",
+                                round((time.time() - t_start) * 1000, 2),
+                            )
+                        except Exception:
+                            pass
+                    result = {
+                        "raw_output": SECURITY_VIOLATION_RESPONSE,
+                        "parsed": None,
+                        "model_used": "pre-retrieval",
+                        "fallback_triggered": False,
+                        "ttft_ms": 0,
+                        "cache_hit": False,
+                        "security_violation": True,
+                        "pipeline_run_id": pipeline_run_id,
+                    }
+                    return result
+    
+                # Route 2: GENERAL chitchat -- bypass vector DBs and RAG
+                if pr.action == "GENERAL":
+                    pr_route = "GENERAL"
+                    documents = []
+                    retrieval_ms = 0.0
+                    skip_cache_override = True
+                else:
+                    # Route 3: REWRITE -- expanded queries + metadata pre-filter
+                    pr_route = "REWRITE"
+                    t_retrieve = time.time()
+                    # Issue 3: comparison/multi-company queries must never be
+                    # scoped to a single ticker -- strip ticker keys first.
+                    pr_scope = self._apply_cross_ticker_bypass(
+                        user_query, pr.metadata_filter
+                    )
+                    # Explicit ALL scope: never apply any single-ticker
+                    # restriction, even if the pre-retrieval stage derived one.
+                    if all_companies:
+                        pr_scope = {
+                            key: value
+                            for key, value in pr_scope.items()
+                            if key not in ("ticker", "tickers")
+                        }
+                    if self._enable_hybrid_retrieval and self._hybrid_search is not None:
+                        # Module 4: Module 3 queries + metadata dict route
+                        # straight into the hybrid engine (dense+BM25+RRF),
+                        # then the optional post-retrieval stage.
+                        documents = self._run_hybrid_retrieval(
+                            user_query, pr.queries, pr_scope
+                        )
+                    else:
+                        documents = self._retrieve_documents_multi(
+                            pr.queries, pr.embeddings, pr_scope, top_k
+                        )
+                    retrieval_ms = (time.time() - t_retrieve) * 1000
+            else:
+                # Legacy flow (pre-retrieval disabled). On the hybrid path use
+                # the explicit args when given; otherwise ground the company and
+                # fiscal year from the question text so the dense/BM25 candidate
+                # pool and the supplementary-table injection stay scoped to the
+                # filing the query is actually about.
+                t_retrieve = time.time()
+    
+                # Single-company coreference for follow-up turns ("first
+                # company", "what about the third company?", "what is its
+                # revenue?") is resolved even when the full pre-retrieval stage
+                # is disabled, scoping retrieval to the resolved company and
+                # inheriting the session's fiscal year instead of collapsing to
+                # every filing / the pipeline's default FY2024.
+                memory_coref = self._resolve_memory_coreference(
+                    user_query, ticker, tickers
+                )
+                resolved_ticker = None
+                inherited_year = None
+                if memory_coref:
+                    resolved_ticker = memory_coref.get("ticker")
+                    inherited_year = memory_coref.get("fiscal_year")
+                    logger.info(
+                        "Memory coreference resolved: %r -> %s (fiscal_year=%s)",
+                        (user_query or "")[:80],
+                        resolved_ticker,
+                        inherited_year,
+                    )
+                    fiscal_year = inherited_year or fiscal_year
+                    all_companies = False
+                    ticker = resolved_ticker
+    
+                # Merge explicit tickers with auto-detected tickers from query text
+                all_detected = self._detect_all_tickers(user_query)
+                effective_tickers = list(tickers) if tickers else []
+                for t in all_detected:
+                    if t not in effective_tickers:
+                        effective_tickers.append(t)
+    
+                # Issue 3: dynamic cross-ticker retrieval bypass. When the
+                # question names multiple tickers, uses comparison wording, OR
+                # the client explicitly selected the "ALL" cross-entity scope,
+                # the single ticker handed over by the frontend payload is
+                # discarded and BALANCED per-ticker sub-retrievals guarantee
+                # every queried company contributes context.
+                if self._has_multi_ticker_intent(user_query) or all_companies:
+                    if all_companies:
+                        from config.settings import SUPPORTED_TICKERS
+                        compare_pool = list(SUPPORTED_TICKERS)
+                        logger.info(
+                            "Cross-entity 'ALL' scope: balanced per-ticker "
+                            "sub-retrievals across all %d ingested filings "
+                            "(requested_ticker=%s, tickers=%s)",
+                            len(compare_pool),
+                            ticker,
+                            tickers,
+                        )
+                    else:
+                        logger.info(
+                            "Cross-ticker bypass: balanced per-ticker sub-retrievals "
+                            "(requested_ticker=%s, tickers=%s)",
+                            ticker,
+                            tickers,
+                        )
+                        compare_pool = self._comparison_ticker_pool(user_query, tickers)
+                    documents = self._balanced_ticker_subretrievals_sync(
+                        user_query,
+                        compare_pool,
+                        fiscal_year=fiscal_year,
+                        top_k=top_k,
+                    )
+                else:
+                    scope_ticker = ticker
+                    scope_tickers = (
+                        list(effective_tickers) if effective_tickers else None
+                    )
+    
+                    if self._enable_hybrid_retrieval and self._hybrid_search is not None:
+                        if scope_tickers and len(scope_tickers) > 1:
+                            hybrid_filter = {"tickers": scope_tickers}
+                        else:
+                            single_ticker = scope_ticker or (
+                                scope_tickers[0] if scope_tickers else None
+                            )
+                            hybrid_filter = (
+                                {"ticker": single_ticker} if single_ticker else {}
+                            )
+                        if fiscal_year:
+                            hybrid_filter["fiscal_year"] = fiscal_year
+                        if not hybrid_filter.get("fiscal_year"):
+                            hybrid_filter["fiscal_year"] = self._query_fiscal_year(
+                                user_query
+                            )
+                        documents = self._run_hybrid_retrieval(
+                            user_query,
+                            [user_query],
+                            hybrid_filter,
+                        )
+                    else:
+                        # Non-hybrid legacy path: also detect multi-ticker and pass
+                        # the list so QdrantIndexer builds an OR filter.
+                        multi_list = (
+                            scope_tickers
+                            if scope_tickers and len(scope_tickers) > 1
+                            else None
+                        )
+                        effective_ticker = scope_ticker or (
+                            multi_list[0] if multi_list else None
+                        )
+                        documents = self._retrieve_documents(
+                            user_query,
+                            ticker=effective_ticker,
+                            fiscal_year=fiscal_year,
+                            top_k=top_k,
+                            tickers=multi_list,
+                        )
+                retrieval_ms = (time.time() - t_retrieve) * 1000
+    
+            if not documents and pr_route != "GENERAL":
+                logger.warning("No documents retrieved for query (id=%s)", pipeline_run_id)
+                if mlflow_active:
+                    try:
+                        mlflow.log_metric("documents_retrieved", 0)
+                        mlflow.log_metric("retrieval_ms", round(retrieval_ms, 2))
+                        mlflow.log_metric("cache_hit", 0)
+                        mlflow.log_metric("e2e_latency_ms", round((time.time() - t_start) * 1000, 2))
+                    except Exception:
+                        pass
+                result = {
+                    "raw_output": "The requested financial information is not available in the provided reports.",
+                    "parsed": None,
+                    "model_used": "none",
+                    "fallback_triggered": False,
+                    "ttft_ms": 0,
+                    "cache_hit": False,
+                    "pipeline_run_id": pipeline_run_id,
+                }
+                return result
+    
+            # Resolve parser table placeholders (%%TABLE_N%%) into the raw
+            # table chunks so numeric figures actually reach the LLM context.
+            # On the hybrid+post-retrieval path also bound the context size
+            # (Groq TPM caps reject the 20K-token contexts the retriever can
+            # produce) and inject missing financial-statement tables.
+            documents = self._resolve_table_placeholders(documents)
+            documents = self._augment_context(documents, user_query, all_companies=all_companies)
+    
+            # Module 6 tracing: capture the raw post-retrieval chunks fed to
+            # the LLM so the offline evaluation BatchRunner can score them.
+            self._last_contexts = list(documents)
+    
+            # Step 3: Format XML context
+            context_xml = format_context_xml(documents)
+    
+            # Step 4: Generate answer. When the question was resolved by memory
+            # to a specific company/year, hand the generator the explicit
+            # entity (retrieval was already scoped; a question that still reads
+            # "the Second company" makes the LLM refuse despite the figures).
+            gen_query = _resolved_generation_query(
+>               user_query, resolved_ticker, inherited_year
+                            ^^^^^^^^^^^^^^^
+            )
+E           UnboundLocalError: cannot access local variable 'resolved_ticker' where it is not associated with a value
+
+src/pipeline.py:1938: UnboundLocalError
+---------------------------- Captured stdout setup -----------------------------
+{"timestamp": "2026-09-05T16:24:46.005649+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "__init__", "line": 465, "message": "FinancialRAGPipeline initialized: primary=openai/gpt-oss-120b fallback=openai/gpt-oss-20b top_k=3 cache=True guardrail=True pre_retrieval=True hybrid_retrieval=False             post_retrieval=False"}
+------------------------------ Captured log setup ------------------------------
+INFO     pipeline.orchestrator:pipeline.py:465 FinancialRAGPipeline initialized: primary=openai/gpt-oss-120b fallback=openai/gpt-oss-20b top_k=3 cache=True guardrail=True pre_retrieval=True hybrid_retrieval=False             post_retrieval=False
+----------------------------- Captured stdout call -----------------------------
+{"timestamp": "2026-09-05T16:24:46.008515+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "query", "line": 1642, "message": "Pipeline query started: id=44fd22e3 ticker=None year=None"}
+{"timestamp": "2026-09-05T16:24:46.011123+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "_resolve_table_placeholders", "line": 758, "message": "Table placeholder resolution: 0/0 documents carried placeholders"}
+------------------------------ Captured log call -------------------------------
+INFO     pipeline.orchestrator:pipeline.py:1642 Pipeline query started: id=44fd22e3 ticker=None year=None
+INFO     pipeline.orchestrator:pipeline.py:758 Table placeholder resolution: 0/0 documents carried placeholders
+_____ TestPipelinePreRetrieval.test_route3_rewrite_uses_metadata_prefilter _____
+
+self = <test.test_3_pre_retrieval.TestPipelinePreRetrieval object at 0x7f8de39819a0>
+m3_pipeline = {'pipeline': <pipeline.FinancialRAGPipeline object at 0x7f8de0634350>, 'orchestrator': <MagicMock name='PreRetrievalOr...antIndexer()' id='140247331492144'>, 'generator': <MagicMock name='FinancialRAGGenerator()' id='140247331776912'>, ...}
+
+    def test_route3_rewrite_uses_metadata_prefilter(self, m3_pipeline):
+        orch = m3_pipeline["orchestrator"]
+        _set_route(orch, PreRetrievalResult(
+            queries=["What is Apple's revenue in 2024?", "top-line revenue for AAPL in 2024"],
+            metadata_filter={"ticker": "AAPL", "fiscal_year": 2024},
+            is_safe=True, action="REWRITE",
+            standalone_query="What is Apple's revenue in 2024?",
+            embeddings=[[0.1] * 768, [0.1] * 768],
+        ))
+>       m3_pipeline["pipeline"].query("What is Apple's revenue in 2024?")
+
+test/test_3_pre_retrieval.py:479: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <pipeline.FinancialRAGPipeline object at 0x7f8de0634350>
+user_query = "What is Apple's revenue in 2024?", ticker = None
+fiscal_year = None, session_id = None, top_k = 3, tickers = None
+
+    def query(
+        self,
+        user_query: str,
+        ticker: Optional[str] = None,
+        fiscal_year: Optional[str] = None,
+        session_id: Optional[str] = None,
+        top_k: int = 3,
+        tickers: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """
+        Execute a full RAG query end-to-end.
+    
+        Steps:
+            1. Cache check — return instantly on Redis hit
+            2. Vector retrieval from Qdrant + MongoDB enrichment
+            3. XML context formatting
+            4. LLM generation via primary/fallback Groq models
+            5. Background async guardrail verification + cache write
+            6. MLflow logging of end-to-end metrics
+    
+        Args:
+            user_query: Natural language financial question.
+            ticker: Optional ticker filter (e.g. 'AAPL').
+            fiscal_year: Optional fiscal year filter (e.g. '2025').
+            session_id: Optional session identifier for conversation memory.
+            top_k: Number of documents to retrieve.
+    
+        Returns:
+            ConsolidatedFinancialAnswer dict with validated JSON response.
+        """
+        pipeline_run_id = str(uuid.uuid4())[:8]
+        t_start = time.time()
+    
+        logger.info(
+            "Pipeline query started: id=%s ticker=%s year=%s",
+            pipeline_run_id,
+            ticker,
+            fiscal_year,
+        )
+    
+        # Start MLflow run
+        mlflow_active = False
+        try:
+            mlflow.set_experiment("financial_rag_pipeline")
+            mlflow.start_run(run_name=f"pipeline_{pipeline_run_id}", nested=True)
+            mlflow.log_param("query", user_query[:200])
+            mlflow.log_param("ticker", ticker or "ANY")
+            mlflow.log_param("fiscal_year", fiscal_year or "ANY")
+            mlflow.log_param("top_k", top_k)
+            mlflow_active = True
+        except Exception as exc:
+            logger.warning("MLflow pipeline run start failed (non-blocking): %s", exc)
+    
+        result: dict[str, Any] | None = None
+        started_guardrail = False
+        try:
+            # Step 1: Cache check
+            if self._enable_cache and self._cache is not None:
+                cached = self._cache.get(
+                    user_query, ticker=ticker, fiscal_year=fiscal_year
+                )
+                if cached is not None:
+                    logger.info("Cache HIT for pipeline query (id=%s)", pipeline_run_id)
+                    if mlflow_active:
+                        try:
+                            mlflow.log_metric("cache_hit", 1)
+                            mlflow.log_metric("e2e_latency_ms", round((time.time() - t_start) * 1000, 2))
+                        except Exception:
+                            pass
+                    result = {
+                        "raw_output": cached.get("answer_json", ""),
+                        "parsed": None,
+                        "model_used": "cache",
+                        "fallback_triggered": False,
+                        "ttft_ms": 0,
+                        "cache_hit": True,
+                        "pipeline_run_id": pipeline_run_id,
+                    }
+                    try:
+                        from schemas import ConsolidatedFinancialAnswer
+                        result["parsed"] = ConsolidatedFinancialAnswer.model_validate_json(
+                            cached.get("answer_json", "")
+                        )
+                    except Exception:
+                        result["parsed"] = None
+                    return result
+    
+            # Step 2: Pre-Retrieval (Module 3) -- optional intent routing
+            pr_route = "DEFAULT"
+            skip_cache_override = False
+    
+            # Explicit cross-entity scope requested by the client (e.g. the
+            # frontend "ALL - Cross-Entity" ticker option, or "ALL" passed in
+            # the ``tickers`` list). When set, retrieval must span EVERY
+            # ingested filing rather than the single collection implied by the
+            # active company selector -- this is what unblocks cross-ticker
+            # comparison prompts that previously collapsed to one company and
+            # returned "information not available".
+            all_companies = (bool(ticker) and ticker.upper() == "ALL") or any(
+                bool(t) and t.upper() == "ALL" for t in (tickers or [])
+            )
+    
+            if self._enable_pre_retrieval and self._pre_retrieval is not None:
+                pr = self._pre_retrieval.process(user_query, history=self._get_conversation_history())
+    
+                # Route 1: security violation -- halt immediately, no GPU spend
+                if not pr.is_safe:
+                    logger.warning(
+                        "Security violation blocked (id=%s): %r",
+                        pipeline_run_id,
+                        user_query[:80],
+                    )
+                    if mlflow_active:
+                        try:
+                            mlflow.log_param("pre_retrieval_route", "BLOCKED")
+                            mlflow.log_metric("documents_retrieved", 0)
+                            mlflow.log_metric("cache_hit", 0)
+                            mlflow.log_metric(
+                                "e2e_latency_ms",
+                                round((time.time() - t_start) * 1000, 2),
+                            )
+                        except Exception:
+                            pass
+                    result = {
+                        "raw_output": SECURITY_VIOLATION_RESPONSE,
+                        "parsed": None,
+                        "model_used": "pre-retrieval",
+                        "fallback_triggered": False,
+                        "ttft_ms": 0,
+                        "cache_hit": False,
+                        "security_violation": True,
+                        "pipeline_run_id": pipeline_run_id,
+                    }
+                    return result
+    
+                # Route 2: GENERAL chitchat -- bypass vector DBs and RAG
+                if pr.action == "GENERAL":
+                    pr_route = "GENERAL"
+                    documents = []
+                    retrieval_ms = 0.0
+                    skip_cache_override = True
+                else:
+                    # Route 3: REWRITE -- expanded queries + metadata pre-filter
+                    pr_route = "REWRITE"
+                    t_retrieve = time.time()
+                    # Issue 3: comparison/multi-company queries must never be
+                    # scoped to a single ticker -- strip ticker keys first.
+                    pr_scope = self._apply_cross_ticker_bypass(
+                        user_query, pr.metadata_filter
+                    )
+                    # Explicit ALL scope: never apply any single-ticker
+                    # restriction, even if the pre-retrieval stage derived one.
+                    if all_companies:
+                        pr_scope = {
+                            key: value
+                            for key, value in pr_scope.items()
+                            if key not in ("ticker", "tickers")
+                        }
+                    if self._enable_hybrid_retrieval and self._hybrid_search is not None:
+                        # Module 4: Module 3 queries + metadata dict route
+                        # straight into the hybrid engine (dense+BM25+RRF),
+                        # then the optional post-retrieval stage.
+                        documents = self._run_hybrid_retrieval(
+                            user_query, pr.queries, pr_scope
+                        )
+                    else:
+                        documents = self._retrieve_documents_multi(
+                            pr.queries, pr.embeddings, pr_scope, top_k
+                        )
+                    retrieval_ms = (time.time() - t_retrieve) * 1000
+            else:
+                # Legacy flow (pre-retrieval disabled). On the hybrid path use
+                # the explicit args when given; otherwise ground the company and
+                # fiscal year from the question text so the dense/BM25 candidate
+                # pool and the supplementary-table injection stay scoped to the
+                # filing the query is actually about.
+                t_retrieve = time.time()
+    
+                # Single-company coreference for follow-up turns ("first
+                # company", "what about the third company?", "what is its
+                # revenue?") is resolved even when the full pre-retrieval stage
+                # is disabled, scoping retrieval to the resolved company and
+                # inheriting the session's fiscal year instead of collapsing to
+                # every filing / the pipeline's default FY2024.
+                memory_coref = self._resolve_memory_coreference(
+                    user_query, ticker, tickers
+                )
+                resolved_ticker = None
+                inherited_year = None
+                if memory_coref:
+                    resolved_ticker = memory_coref.get("ticker")
+                    inherited_year = memory_coref.get("fiscal_year")
+                    logger.info(
+                        "Memory coreference resolved: %r -> %s (fiscal_year=%s)",
+                        (user_query or "")[:80],
+                        resolved_ticker,
+                        inherited_year,
+                    )
+                    fiscal_year = inherited_year or fiscal_year
+                    all_companies = False
+                    ticker = resolved_ticker
+    
+                # Merge explicit tickers with auto-detected tickers from query text
+                all_detected = self._detect_all_tickers(user_query)
+                effective_tickers = list(tickers) if tickers else []
+                for t in all_detected:
+                    if t not in effective_tickers:
+                        effective_tickers.append(t)
+    
+                # Issue 3: dynamic cross-ticker retrieval bypass. When the
+                # question names multiple tickers, uses comparison wording, OR
+                # the client explicitly selected the "ALL" cross-entity scope,
+                # the single ticker handed over by the frontend payload is
+                # discarded and BALANCED per-ticker sub-retrievals guarantee
+                # every queried company contributes context.
+                if self._has_multi_ticker_intent(user_query) or all_companies:
+                    if all_companies:
+                        from config.settings import SUPPORTED_TICKERS
+                        compare_pool = list(SUPPORTED_TICKERS)
+                        logger.info(
+                            "Cross-entity 'ALL' scope: balanced per-ticker "
+                            "sub-retrievals across all %d ingested filings "
+                            "(requested_ticker=%s, tickers=%s)",
+                            len(compare_pool),
+                            ticker,
+                            tickers,
+                        )
+                    else:
+                        logger.info(
+                            "Cross-ticker bypass: balanced per-ticker sub-retrievals "
+                            "(requested_ticker=%s, tickers=%s)",
+                            ticker,
+                            tickers,
+                        )
+                        compare_pool = self._comparison_ticker_pool(user_query, tickers)
+                    documents = self._balanced_ticker_subretrievals_sync(
+                        user_query,
+                        compare_pool,
+                        fiscal_year=fiscal_year,
+                        top_k=top_k,
+                    )
+                else:
+                    scope_ticker = ticker
+                    scope_tickers = (
+                        list(effective_tickers) if effective_tickers else None
+                    )
+    
+                    if self._enable_hybrid_retrieval and self._hybrid_search is not None:
+                        if scope_tickers and len(scope_tickers) > 1:
+                            hybrid_filter = {"tickers": scope_tickers}
+                        else:
+                            single_ticker = scope_ticker or (
+                                scope_tickers[0] if scope_tickers else None
+                            )
+                            hybrid_filter = (
+                                {"ticker": single_ticker} if single_ticker else {}
+                            )
+                        if fiscal_year:
+                            hybrid_filter["fiscal_year"] = fiscal_year
+                        if not hybrid_filter.get("fiscal_year"):
+                            hybrid_filter["fiscal_year"] = self._query_fiscal_year(
+                                user_query
+                            )
+                        documents = self._run_hybrid_retrieval(
+                            user_query,
+                            [user_query],
+                            hybrid_filter,
+                        )
+                    else:
+                        # Non-hybrid legacy path: also detect multi-ticker and pass
+                        # the list so QdrantIndexer builds an OR filter.
+                        multi_list = (
+                            scope_tickers
+                            if scope_tickers and len(scope_tickers) > 1
+                            else None
+                        )
+                        effective_ticker = scope_ticker or (
+                            multi_list[0] if multi_list else None
+                        )
+                        documents = self._retrieve_documents(
+                            user_query,
+                            ticker=effective_ticker,
+                            fiscal_year=fiscal_year,
+                            top_k=top_k,
+                            tickers=multi_list,
+                        )
+                retrieval_ms = (time.time() - t_retrieve) * 1000
+    
+            if not documents and pr_route != "GENERAL":
+                logger.warning("No documents retrieved for query (id=%s)", pipeline_run_id)
+                if mlflow_active:
+                    try:
+                        mlflow.log_metric("documents_retrieved", 0)
+                        mlflow.log_metric("retrieval_ms", round(retrieval_ms, 2))
+                        mlflow.log_metric("cache_hit", 0)
+                        mlflow.log_metric("e2e_latency_ms", round((time.time() - t_start) * 1000, 2))
+                    except Exception:
+                        pass
+                result = {
+                    "raw_output": "The requested financial information is not available in the provided reports.",
+                    "parsed": None,
+                    "model_used": "none",
+                    "fallback_triggered": False,
+                    "ttft_ms": 0,
+                    "cache_hit": False,
+                    "pipeline_run_id": pipeline_run_id,
+                }
+                return result
+    
+            # Resolve parser table placeholders (%%TABLE_N%%) into the raw
+            # table chunks so numeric figures actually reach the LLM context.
+            # On the hybrid+post-retrieval path also bound the context size
+            # (Groq TPM caps reject the 20K-token contexts the retriever can
+            # produce) and inject missing financial-statement tables.
+            documents = self._resolve_table_placeholders(documents)
+            documents = self._augment_context(documents, user_query, all_companies=all_companies)
+    
+            # Module 6 tracing: capture the raw post-retrieval chunks fed to
+            # the LLM so the offline evaluation BatchRunner can score them.
+            self._last_contexts = list(documents)
+    
+            # Step 3: Format XML context
+            context_xml = format_context_xml(documents)
+    
+            # Step 4: Generate answer. When the question was resolved by memory
+            # to a specific company/year, hand the generator the explicit
+            # entity (retrieval was already scoped; a question that still reads
+            # "the Second company" makes the LLM refuse despite the figures).
+            gen_query = _resolved_generation_query(
+>               user_query, resolved_ticker, inherited_year
+                            ^^^^^^^^^^^^^^^
+            )
+E           UnboundLocalError: cannot access local variable 'resolved_ticker' where it is not associated with a value
+
+src/pipeline.py:1938: UnboundLocalError
+---------------------------- Captured stdout setup -----------------------------
+{"timestamp": "2026-09-05T16:24:46.177082+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "__init__", "line": 465, "message": "FinancialRAGPipeline initialized: primary=openai/gpt-oss-120b fallback=openai/gpt-oss-20b top_k=3 cache=True guardrail=True pre_retrieval=True hybrid_retrieval=False             post_retrieval=False"}
+------------------------------ Captured log setup ------------------------------
+INFO     pipeline.orchestrator:pipeline.py:465 FinancialRAGPipeline initialized: primary=openai/gpt-oss-120b fallback=openai/gpt-oss-20b top_k=3 cache=True guardrail=True pre_retrieval=True hybrid_retrieval=False             post_retrieval=False
+----------------------------- Captured stdout call -----------------------------
+{"timestamp": "2026-09-05T16:24:46.179889+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "query", "line": 1642, "message": "Pipeline query started: id=ac7bab91 ticker=None year=None"}
+{"timestamp": "2026-09-05T16:24:46.182395+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "_enrich_documents", "line": 639, "message": "Retrieved 2/2 documents (Qdrant: 2, MongoDB enriched: 2)"}
+{"timestamp": "2026-09-05T16:24:46.182772+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "_resolve_table_placeholders", "line": 758, "message": "Table placeholder resolution: 0/2 documents carried placeholders"}
+{"timestamp": "2026-09-05T16:24:46.184243+00:00", "level": "WARNING", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "_augment_context", "line": 1354, "message": "No financial-statement tables for AAPL FY2024; its figures will be absent from the cross-company context"}
+{"timestamp": "2026-09-05T16:24:46.184639+00:00", "level": "INFO", "logger": "pipeline.orchestrator", "module": "pipeline", "function": "_augment_context", "line": 1518, "message": "Context prepared: 1 documents, 165 chars (budget=12000)"}
+------------------------------ Captured log call -------------------------------
+INFO     pipeline.orchestrator:pipeline.py:1642 Pipeline query started: id=ac7bab91 ticker=None year=None
+INFO     pipeline.orchestrator:pipeline.py:639 Retrieved 2/2 documents (Qdrant: 2, MongoDB enriched: 2)
+INFO     pipeline.orchestrator:pipeline.py:758 Table placeholder resolution: 0/2 documents carried placeholders
+WARNING  pipeline.orchestrator:pipeline.py:1354 No financial-statement tables for AAPL FY2024; its figures will be absent from the cross-company context
+INFO     pipeline.orchestrator:pipeline.py:1518 Context prepared: 1 documents, 165 chars (budget=12000)
+=============================== warnings summary ===============================
+src/5_generation/schemas.py:14
+  /home/youssef/Financial_RAG/src/5_generation/schemas.py:14: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.13/migration/
+    class ConsolidatedFinancialAnswer(BaseModel):
+
+test/test_pipeline_orchestrator.py::TestCacheMiss::test_full_flow_returns_parsed_answer
+  /home/youssef/Financial_RAG/src/pipeline.py:1967: DeprecationWarning: There is no current event loop
+    loop = asyncio.get_event_loop()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED test/test_pipeline_orchestrator.py::TestCacheMiss::test_generator_called_with_retrieved_docs
+FAILED test/test_pipeline_orchestrator.py::TestMLflowLogging::test_mlflow_metrics_logged
+FAILED test/test_3_pre_retrieval.py::TestPipelinePreRetrieval::test_route2_general_bypasses_retrieval
+FAILED test/test_3_pre_retrieval.py::TestPipelinePreRetrieval::test_route3_rewrite_uses_metadata_prefilter
+4 failed, 88 passed, 2 warnings in 75.54s (0:01:15)

@@ -6,34 +6,54 @@ env/
 venv/
 ENV/
 .venv/
+*.venv
 
 # ==========================================
-# 2. Secrets & Environment Variables (مهم جداً للـ API Keys)
+# 2. Secrets & Environment Variables (حماية الـ API Keys)
 # ==========================================
 .env
+.env.*
+!.env.example
 .env.local
-*.env
 
 # ==========================================
-# 3. Databases & Local Storage (قواعد البيانات المحلية والـ Vector DB)
+# 3. Heavy Artifacts, Data & Models (بيانات ضخمة ونماذج)
+# ==========================================
+artifacts/
+data/
+mongodb_data/
+backups/
+results/
+tmp/
+*.pdf
+*.csv
+*.parquet
+*.jsonl
+
+# ==========================================
+# 4. Databases & ML Tracking
 # ==========================================
 mlflow.db
 mlruns/
-data/qdrant_db/
 *.sqlite3
 *.db
 
 # ==========================================
-# 4. Logs & Cache (الملفات المؤقتة والـ Logs)
+# 5. Logs, Cache & Next.js/Frontend
 # ==========================================
 logs/
 *.log
 .pytest_cache/
 __pycache__/
 *.py[cod]
+frontend/.next/
+frontend/node_modules/
+frontend/out/
+frontend/build/
+frontend/.next-cache/
 
 # ==========================================
-# 5. OS & IDE Specific (ملفات النظامات والمحررات)
+# 6. OS & IDE Specific
 # ==========================================
 .vscode/
 .idea/

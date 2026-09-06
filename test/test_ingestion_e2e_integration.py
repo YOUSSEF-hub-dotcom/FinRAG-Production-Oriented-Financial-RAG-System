@@ -28,7 +28,7 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 sys.path.insert(0, str(_PROJECT_ROOT / "src" / "1_ingestion"))
 
 from config.logging_config import get_logger
-from config.settings import DATA_DIR, LOG_DIR, QDRANT_PATH
+from config.settings import CHUNK_MAX_TOKENS, DATA_DIR, LOG_DIR, QDRANT_PATH
 
 from html_table_parser import parse_sec_filing
 from cleaning import clean_financial_text
@@ -342,10 +342,11 @@ def test_json_logging():
 # ============================================================================
 
 def test_token_constraint(chunks: list[dict]):
-    """Verify all TEXT chunks respect the 768-token maximum.
+    """Verify all TEXT chunks respect the CHUNK_MAX_TOKENS maximum.
 
     Table chunks are exempt: SEC financial tables are atomic and must never
-    be split per the design spec.  Large tables are expected to exceed 768 tokens.
+    be split per the design spec.  Large tables are expected to exceed
+    CHUNK_MAX_TOKENS tokens.
     """
     encoder = _get_token_encoder()
     text_violations = []
@@ -357,11 +358,11 @@ def test_token_constraint(chunks: list[dict]):
             if actual > 8192:
                 table_violations.append((chunk["chunk_id"], actual))
         else:
-            if actual > 768:
+            if actual > CHUNK_MAX_TOKENS:
                 text_violations.append((chunk["chunk_id"], actual))
 
     assert len(text_violations) == 0, (
-        f"{len(text_violations)} text chunks exceed 768 tokens: "
+        f"{len(text_violations)} text chunks exceed {CHUNK_MAX_TOKENS} tokens: "
         + ", ".join(f"{cid}({tok})" for cid, tok in text_violations[:5])
     )
     assert len(table_violations) == 0, (

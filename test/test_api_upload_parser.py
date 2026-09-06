@@ -30,7 +30,7 @@ for _p in (
     str(_PROJECT_ROOT),
     str(_src_root),
     str(_src_root / "1_ingestion"),
-    str(_src_root / "2_generation"),
+    str(_src_root / "5_generation"),
 ):
     if _p not in sys.path:
         sys.path.insert(0, _p)

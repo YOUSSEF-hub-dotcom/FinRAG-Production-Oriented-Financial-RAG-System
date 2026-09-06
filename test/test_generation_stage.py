@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # --- Path Setup ---
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
-sys.path.insert(0, str(_PROJECT_ROOT / "src" / "2_generation"))
+sys.path.insert(0, str(_PROJECT_ROOT / "src" / "5_generation"))
 
 from config.logging_config import get_logger
 
@@ -293,7 +293,7 @@ def test_guardrail_pass_same_numbers():
     answer = "Revenue was $394,328 million, up 4.8% from last year."
     raw = "Net sales for 2025: $394,328 million. Growth rate: 4.8%."
 
-    passed, verified, failed = asyncio.get_event_loop().run_until_complete(
+    passed, verified, failed = asyncio.run(
         verify_numerical_claims(answer, raw)
     )
     assert passed is True, f"Expected pass, got failed={failed}"
@@ -309,7 +309,7 @@ def test_guardrail_fail_hallucinated_numbers():
     answer = "Revenue was $999,999 million."
     raw = "Net sales for 2025: $394,328 million."
 
-    passed, verified, failed = asyncio.get_event_loop().run_until_complete(
+    passed, verified, failed = asyncio.run(
         verify_numerical_claims(answer, raw)
     )
     assert passed is False, "Expected fail for hallucinated number"
@@ -324,7 +324,7 @@ def test_guardrail_pass_no_numbers():
     answer = "Apple is a technology company."
     raw = "Apple Inc. designs consumer electronics."
 
-    passed, verified, failed = asyncio.get_event_loop().run_until_complete(
+    passed, verified, failed = asyncio.run(
         verify_numerical_claims(answer, raw)
     )
     assert passed is True
@@ -402,7 +402,7 @@ def test_guardrail_orchestrator_pass():
 
     guardrail = AsyncGuardrail()
     try:
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             guardrail.check(
                 query="AAPL revenue 2025",
                 answer="Apple reported $394,328M in revenue.",
@@ -427,7 +427,7 @@ def test_guardrail_orchestrator_fail():
 
     guardrail = AsyncGuardrail()
     try:
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             guardrail.check(
                 query="AAPL revenue 2025",
                 answer="Apple reported $999,999M in revenue.",
@@ -460,7 +460,7 @@ def test_mlflow_logging():
     mlflow.set_experiment("financial_rag_generation_test")
     with mlflow.start_run(run_name="test_gen_smoke"):
         mlflow.log_param("primary_model", "qwen-2.5-72b-instruct")
-        mlflow.log_param("fallback_model", "llama-3.3-70b-versatile")
+        mlflow.log_param("fallback_model", "openai/gpt-oss-20b")
         mlflow.log_param("temperature", 0.0)
         mlflow.log_param("max_tokens", 2048)
         mlflow.log_param("seed", 42)

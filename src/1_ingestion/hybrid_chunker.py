@@ -3,11 +3,15 @@ Hybrid Chunker — 3-Tier token-bounded chunking engine for SEC filings.
 
 Tier 1: Section-level splitting on SEC Item boundaries.
 Tier 2: Table & footnote isolation as atomic chunks (never split).
-Tier 3: Token-bounded recursive text splitting (512-768 tokens, 10-15% overlap).
+Tier 3: Token-bounded recursive text splitting (768-1024 tokens, 20% overlap).
+
+Chunk-size and overlap parameters are read from ``config.settings``
+(``CHUNK_MIN_TOKENS`` / ``CHUNK_MAX_TOKENS`` / ``CHUNK_OVERLAP_RATIO``) so a
+single config change re-bounds every ingestion run consistently.
 """
 
+import hashlib
 import re
-import uuid
 from pathlib import Path
 
 import tiktoken
@@ -19,7 +23,7 @@ logger = get_logger("ingestion.chunker")
 
 # SEC Item boundary patterns for Tier 1 section splitting
 _SECTION_BOUNDARIES = re.compile(
-    r"(?=(?:^|\n)\s*(?:Item\s+\d+[A-Z]?[\.\:]\s|Part\s+(?:I{1,3}V?|IV)\b))",
+    r"(?=Item\s+\d+[A-Z]?[\:\.]\s|Part\s+(?:I{1,3}V?|IV)\b)",
     re.IGNORECASE,
 )
 
@@ -62,14 +66,14 @@ def _split_on_sections(text: str) -> list[dict]:
         if not stripped:
             continue
 
-        # Extract section name from the first line
-        first_line = stripped.split("\n", 1)[0].strip()
-        section_match = re.match(
-            r"(Item\s+\d+[A-Z]?[\.\:]\s*.+|Part\s+(?:I{1,3}V?|IV)\b.*)",
-            first_line,
+        # Extract section name — find the Item/Part header in first 300 chars
+        search_text = stripped[:300]
+        header_match = re.search(
+            r"((?:Item\s+\d+[A-Z]?[\:\.]\s+.+?)(?=\s{2,}|$)|Part\s+(?:I{1,3}V?|IV)\b)",
+            search_text,
             re.IGNORECASE,
         )
-        section_name = section_match.group(0) if section_match else "General"
+        section_name = header_match.group(0).strip()[:80] if header_match else "General"
 
         sections.append({
             "section_name": section_name,
@@ -79,15 +83,47 @@ def _split_on_sections(text: str) -> list[dict]:
     logger.debug("Tier 1: Split document into %d sections", len(sections))
     return sections
 
-
-def _extract_table_chunks(text: str) -> tuple[list[str], str]:
+def _extract_table_chunks(text: str) -> tuple[list[tuple[str, str]], str]:
     """
     Tier 2: Extract Markdown tables and their immediately following footnotes
-    as atomic chunks. Returns (table_chunks, remaining_text).
+    as atomic chunks, tracking the SEC section each table belongs to.
+
+    Pre-scans the full text for Item/Part section boundaries, then maps each
+    table's character position to its nearest preceding section — works even
+    when the text has no newlines.
+
+    Returns (table_chunks_with_sections, remaining_text) where each table
+    chunk is a (section_name, table_text) tuple.
     """
+    # Build a position-to-section map by finding all Item/Part headers
+    section_positions: list[tuple[int, str]] = []
+    for m in re.finditer(
+        r"(Item\s+\d+[A-Z]?[\:\.]\s+.+?)(?=\s{2,}|$|Item\s|Part\s)",
+        text,
+        re.IGNORECASE,
+    ):
+        section_positions.append((m.start(), m.group(0).strip()[:80]))
+    for m in re.finditer(
+        r"(Part\s+(?:I{1,3}V?|IV)\b)",
+        text,
+        re.IGNORECASE,
+    ):
+        section_positions.append((m.start(), m.group(0).strip()[:80]))
+    section_positions.sort(key=lambda x: x[0])
+
+    def _find_section_at(pos: int) -> str:
+        """Find the section that covers character position `pos`."""
+        result = "General"
+        for sec_pos, sec_name in section_positions:
+            if sec_pos <= pos:
+                result = sec_name
+            else:
+                break
+        return result
+
     lines = text.split("\n")
-    table_chunks = []
-    non_table_lines = []
+    table_chunks: list[tuple[str, str]] = []
+    non_table_lines: list[str] = []
     i = 0
 
     while i < len(lines):
@@ -95,6 +131,10 @@ def _extract_table_chunks(text: str) -> tuple[list[str], str]:
         is_table_start = bool(_TABLE_LINE.match(line))
 
         if is_table_start:
+            # Find the character position of this table in the original text
+            table_pos = text.find(line.strip()[:50]) if line.strip() else -1
+            current_section = _find_section_at(table_pos) if table_pos >= 0 else "General"
+
             # Collect contiguous table lines
             table_buffer = [line]
             i += 1
@@ -108,7 +148,7 @@ def _extract_table_chunks(text: str) -> tuple[list[str], str]:
                 i += 1
 
             table_text = "\n".join(table_buffer)
-            table_chunks.append(table_text)
+            table_chunks.append((current_section, table_text))
         else:
             non_table_lines.append(line)
             i += 1
@@ -120,7 +160,6 @@ def _extract_table_chunks(text: str) -> tuple[list[str], str]:
         len(remaining_text),
     )
     return table_chunks, remaining_text
-
 
 def _recursive_token_split(
     text: str,
@@ -231,6 +270,20 @@ def _hard_split_segment(
     return chunks
 
 
+def _make_chunk_id(ticker: str, fiscal_year: str, chunk_type: str, source_file: str, index: int) -> str:
+    """
+    Generate a deterministic chunk ID so re-ingestion is idempotent.
+
+    Format: {TICKER}_{txt|tbl}_{md5 hash}_{index:04d}
+    Same inputs always yield the same ID (stable across runs).
+    fiscal_year is part of the hash input so filings from different years
+    of the same company never collide.
+    """
+    hash_input = f"{ticker}:{fiscal_year}:{chunk_type}:{source_file}:{index}"
+    short_hash = hashlib.md5(hash_input.encode()).hexdigest()[:12]
+    return f"{ticker}_{chunk_type}_{short_hash}_{index:04d}"
+
+
 def chunk_document(
     text: str,
     tables: list[str] | None = None,
@@ -257,17 +310,67 @@ def chunk_document(
     if metadata_base is None:
         metadata_base = {}
 
-    # --- Tier 2: Extract table atomic chunks from text ---
-    table_chunks_from_text, remaining_text = _extract_table_chunks(text)
+    source_name = metadata_base.get("source_file") or str(file_path)
 
-    # Combine parser-extracted tables with inline tables
-    all_table_chunks = list(tables or []) + table_chunks_from_text
+        # --- Tier 2: Extract table atomic chunks from text ---
+    # Parser replaces HTML tables with %%TABLE_N%% placeholders in the text.
+    # We map each placeholder's character position to its SEC section so parser-
+    # extracted tables get correct section labels (not "General").
+    placeholder_positions: dict[int, int] = {}
+    for _m in re.finditer(r"%%TABLE_(\d+)%%", text):
+        placeholder_positions[int(_m.group(1))] = _m.start()
 
-    # Create atomic table chunks
-    for idx, table_text in enumerate(all_table_chunks):
+    # Build section-position map from the cleaned text
+    section_positions: list[tuple[int, str]] = []
+    for _m in re.finditer(
+        r"(Item\s+\d+[A-Z]?[\:\.]\s+.+?)(?=\s{2,}|$|Item\s|Part\s)",
+        text,
+        re.IGNORECASE,
+    ):
+        section_positions.append((_m.start(), _m.group(0).strip()[:80]))
+    for _m in re.finditer(
+        r"(Part\s+(?:I{1,3}V?|IV)\b)",
+        text,
+        re.IGNORECASE,
+    ):
+        section_positions.append((_m.start(), _m.group(0).strip()[:80]))
+    section_positions.sort(key=lambda x: x[0])
+
+    def _find_section_at(pos: int) -> str:
+        result = "General"
+        for sec_pos, sec_name in section_positions:
+            if sec_pos <= pos:
+                result = sec_name
+            else:
+                break
+        return result
+
+    # Map parser-extracted tables to their sections via placeholder positions
+    parser_tables_with_sections: list[tuple[str, str]] = []
+    for _idx, _tbl in enumerate(tables or []):
+        if _idx in placeholder_positions:
+            _sec = _find_section_at(placeholder_positions[_idx])
+        else:
+            _sec = metadata_base.get("section", "General")
+        parser_tables_with_sections.append((_sec, _tbl))
+
+    # Text-extracted tables also get sections from position map
+    text_tables_raw, remaining_text = _extract_table_chunks(text)
+    text_tables = text_tables_raw  # Already (section, text) tuples
+
+    all_table_chunks = parser_tables_with_sections + text_tables
+
+    # Create atomic table chunks (with correct section assignment)
+    for idx, (tbl_section, table_text) in enumerate(all_table_chunks):
         if not table_text.strip():
             continue
-        chunk_id = f"{metadata_base.get('ticker', 'UNK')}_tbl_{uuid.uuid4().hex[:12]}_{idx:04d}"
+        chunk_id = _make_chunk_id(
+            metadata_base.get("ticker", "UNK"),
+            metadata_base.get("fiscal_year", "UNKNOWN"),
+            "tbl",
+            source_name,
+            idx,
+        )
         chunk = {
             "chunk_id": chunk_id,
             "text": table_text.strip(),
@@ -275,18 +378,14 @@ def chunk_document(
             "token_count": count_tokens(table_text, encoder),
             "metadata": {
                 **metadata_base,
+                "section": tbl_section,
                 "contains_table": True,
                 "chunk_type": "table",
             },
         }
         all_chunks.append(chunk)
 
-    logger.info(
-        "Tier 2: Created %d atomic table chunks",
-        len([c for c in all_chunks if c["chunk_type"] == "table"]),
-    )
-
-    # --- Tier 1: Split remaining text on section boundaries ---
+# --- Tier 1: Split remaining text on section boundaries ---
     sections = _split_on_sections(remaining_text)
 
     # --- Tier 3: Token-bounded splitting within each section ---
@@ -299,7 +398,13 @@ def chunk_document(
         sub_chunks = _recursive_token_split(section_text, encoder)
 
         for sub_text in sub_chunks:
-            chunk_id = f"{metadata_base.get('ticker', 'UNK')}_txt_{uuid.uuid4().hex[:12]}_{text_chunk_idx:04d}"
+            chunk_id = _make_chunk_id(
+                metadata_base.get("ticker", "UNK"),
+                metadata_base.get("fiscal_year", "UNKNOWN"),
+                "txt",
+                source_name,
+                text_chunk_idx,
+            )
             chunk = {
                 "chunk_id": chunk_id,
                 "text": sub_text,
