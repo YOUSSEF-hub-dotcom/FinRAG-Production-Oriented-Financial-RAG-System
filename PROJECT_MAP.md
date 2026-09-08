@@ -1,6 +1,7 @@
 # PROJECT_MAP.md — Financial RAG System
 
-> **Document status: REBUILT 2026-09-06** from a full-current-codebase inspection.
+> **Document status: REBUILT 2026-09-06**; **updated 2026-09-07** for the Docker Compose
+> deployment (verified 6-service stack — §1/§16/§17/§23/§30).
 > The codebase is the source of truth; this map was re-synchronized against the
 > working tree (not git HEAD — see §26). Every statement below is verified against
 > the current source unless explicitly marked **NOT VERIFIED** or **HISTORICAL**.
@@ -24,20 +25,21 @@ table-aware context construction, a Groq LLM generator, and an async hallucinati
 guardrail. It exposes a FastAPI backend (auth, RBAC, rate limiting, SSE streaming,
 audit logging) consumed by a Next.js 15 dashboard and a legacy Streamlit client.
 
-Current runtime facts (verified at inspection):
+Current runtime facts (verified 2026-09-07 at inspection):
 
 | Layer | Actual technology |
 |---|---|
 | Embedding model | `nomic-ai/nomic-embed-text-v1.5` (768-dim, CUDA) |
 | Reranker | `BAAI/bge-reranker-large` cross-encoder, **dtype default `float16`** (CPU → float32 fallback) |
-| Vector store | Qdrant embedded `path=` local mode, collection `financial_vectors`, 768-dim Cosine |
-| Document store | MongoDB (`financial_rag.raw_chunks`, plus `users`, `rag_audit_logs`) |
-| Cache / queue / rate-limit / auth-blacklist | Redis (`redis://localhost:6379/0`) |
+| Vector store | Qdrant **server container** (compose service `qdrant` at `qdrant:6333`, volume `qdrant_storage`), collection `financial_vectors`, 768-dim Cosine |
+| Document store | MongoDB **7 container** (compose service `mongo`; `financial_rag.raw_chunks`, plus `users`, `rag_audit_logs`) |
+| Cache / queue / rate-limit / auth-blacklist | Redis **7 container** (compose service `redis`, `redis://redis:6379/0`) |
 | LLM generation | Groq `openai/gpt-oss-120b` (primary), `openai/gpt-oss-20b` (fallback), temp 0.0, seed 42 |
 | Judge LLM (eval only) | Groq `qwen/qwen3.6-27b` (primary), `openai/gpt-oss-120b` (fallback) |
-| Backend | FastAPI + Uvicorn (`app/api/main.py`), optional Arq worker on Redis |
-| Dashboards | Next.js 15.5.23 (React 19) primary; Streamlit legacy (`app/ui/streamlit_app.py`) |
-| Runtime | Python 3.12.3 venv `Financial_env`, WSL2 native ext4 |
+| Backend | FastAPI + Uvicorn **container** (service `backend`, published `8000:8000`), CUDA/GPU runtime, optional Arq worker on Redis |
+| Dashboards | Next.js 15.5.23 (React 19) **container** (service `frontend`, published `3000:3000`) primary; Streamlit legacy (`app/ui/streamlit_app.py`, profile-only) |
+| MLflow | **server container** (service `mlflow`, `mlflow:5000`, file store `/mlflow`, volumes `mlflow_store` + `mlflow_artifacts`) |
+| Runtime | **Docker Compose project `financial-rag` — 6 active services** (backend, frontend, mongo, redis, qdrant, mlflow) on WSL2 + Docker Desktop; backend container runs Python 3.12-slim + `torch 2.13.0+cu130` with **CUDA on NVIDIA GeForce RTX 4050 Laptop GPU** |
 
 ---
 
@@ -138,9 +140,17 @@ Financial_RAG/                          (canonical runtime: WSL2 native ext4)
 │   │                                   reingest_run*.log · mongod*.log · e2e_api.log ·
 │   │                                   subset_*.log · various probe outputs
 ├── tmp/                                ops/e2e/admin helper scripts (Fix mapped in §22)
-├── mlflow.db                           MLflow tracking (SQLite) — canonical tracking store
+├── mlflow.db                           MLflow tracking (SQLite) — native store (pre-Docker;
+│                                       the `mlflow` container uses file:/mlflow, §23)
 ├── mlruns/                             MLflow FileStore legacy artifacts (not primary)
 ├── requirements.txt                    pinned deps (torch 2.13.0+cu130, see §23)
+├── docker-compose.yml                  containerized stack — 6 active services + streamlit
+│                                       profile; arq-worker commented (§23)
+├── app/Dockerfile                      backend multi-stage image (python:3.12-slim + torch cu130)
+├── frontend/Dockerfile                 frontend multi-stage image (node:20-alpine, next build)
+├── .dockerignore                       repo-root build-context exclusions
+├── frontend/.dockerignore              frontend build-context exclusions
+├── .env.example                        env template — copy to `.env` and fill (§23)
 ├── .env                                runtime env (see §17 — KEY MISMATCH finding)
 ├── .gitignore  README.md  PROJECT_MAP.md  (this file)
 ```
@@ -528,7 +538,8 @@ path alias `@/*`.
 
 ## 16. Database Architecture
 
-**MongoDB** (`financial_rag` on `mongodb://localhost:27017`; unique index on `chunk_id`):
+**MongoDB** (compose `mongo` service → `mongodb://mongo:27017/financial_rag`, volume
+`mongodb_data`; native default was `mongodb://localhost:27017`; unique index on `chunk_id`):
 | Collection | Purpose / shape |
 |---|---|
 | `raw_chunks` | `{_id, chunk_id, chunk_type, contains_table, doc_type, fiscal_year, page_number(None), raw_text, section, source_file, ticker, token_count}`; each chunk's full text + metadata |
@@ -536,8 +547,9 @@ path alias `@/*`.
 | `rag_audit_logs` | per-request execution traces (see §14) |
 | system collections | `financial_rag.<system>` etc. (implied, WiredTiger) |
 
-**Qdrant** (`data/qdrant_db`, embedded local mode, Rust server, file-locked:
-`financial_vectors`, 768-dim, Cosine, HNSW):
+**Qdrant** (compose `qdrant` service, server mode reached via empty `QDRANT_PATH`; volume
+`qdrant_storage`; `financial_vectors`, 768-dim, Cosine, HNSW. Native historical mode: embedded
+`data/qdrant_db`, file-locked):
 | Field | Value |
 |---|---|
 | collection | `financial_vectors` |
@@ -546,7 +558,8 @@ path alias `@/*`.
 | payload | `{chunk_id, ticker, fiscal_year, section, doc_type, contains_table}` (no raw text) |
 | geometry | verified live 2026-09-05: 1147 points (incl. the `UNKNOWN` NVDA supplement at point `2f3e64ef-e979-52e8-8352-b09389293977`, 768-dim) |
 
-**Redis** (`redis://localhost:6379/0`): semantic cache keys `sem_cache:{TICKER}:{YEAR}:
+**Redis** (compose `redis` service → `redis://redis:6379/0`, volume `redis_data`; native default
+was `redis://localhost:6379/0`): semantic cache keys `sem_cache:{TICKER}:{YEAR}:
 {sha256:16}`; TTL 7d static / 1h ad-hoc; auth blacklist `auth:blacklist:{jti}`;
 slowapi storage; Arq queue when enabled. **At inspection DB was empty (DBSIZE=0).**
 
@@ -565,8 +578,10 @@ not an overwrite — the UNKNOWN copy must be explicitly removed.
 `MONGO_URI`, `MONGO_DB_NAME`, `REDIS_HOST`, `REDIS_PORT` (canonical `MONGODB_URI`/
 `MONGODB_DB`/`REDIS_URL` still take precedence when present). Verified live: `MONGODB_URI`
 resolves to `MONGO_URI`, `MONGODB_DB` to `MONGO_DB_NAME`, `REDIS_URL` to
-`redis://{REDIS_HOST}:{REDIS_PORT}/0`. **Still ignored**: `QDRANT_URL` (Qdrant stays on
-`data/qdrant_db`) and `MLFLOW_TRACKING_URI` (MLflow stays on the SQLite registry) — §26.1.
+`redis://{REDIS_HOST}:{REDIS_PORT}/0`. **Still ignored**: `QDRANT_URL` and `MLFLOW_TRACKING_URI` remain unread by `settings.py` —
+§26.1. In the containerized deployment the compose backend env overrides connectivity instead:
+`QDRANT_HOST=qdrant` / `QDRANT_PORT=6333` / `QDRANT_PATH=""` (→ remote Qdrant server) and
+`MLFLOW_EVAL_REGISTRY_URI=http://mlflow:5000` (§23).
 
 Key effective values (defaults used unless overridden):
 
@@ -576,11 +591,11 @@ Key effective values (defaults used unless overridden):
 | `GROQ_PRIMARY_MODEL` / `GROQ_FALLBACK_MODEL` | `openai/gpt-oss-120b` / `openai/gpt-oss-20b` | from `.env` |
 | `JUDGE_PRIMARY_MODEL` / `JUDGE_FALLBACK_MODEL` | `qwen/qwen3.6-27b` / `openai/gpt-oss-120b` | from `.env` |
 | `RERANKER_DTYPE` | **`float16`** | CPU falls back to float32 |
-| `MONGODB_URI` / `MONGODB_DB` / `MONGODB_COLLECTION` | from `.env` MONGO_* | **FIXED** — canonical keys win, legacy `MONGO_URI`/`MONGO_DB_NAME` honoured |
-| `QDRANT_PATH` | `data/qdrant_db` | `.env` QDRANT_URL **ignored** |
-| `REDIS_URL` | `redis://{REDIS_HOST}:{REDIS_PORT}/0` from `.env` | **FIXED** — explicit `REDIS_URL` wins, else built from `REDIS_HOST`/`REDIS_PORT` |
+| `MONGODB_URI` / `MONGODB_DB` / `MONGODB_COLLECTION` | from `.env` MONGO_*; **compose sets `mongodb://mongo:27017/financial_rag`** | **FIXED** — canonical keys win, legacy `MONGO_URI`/`MONGO_DB_NAME` honoured |
+| `QDRANT_PATH` | native default `data/qdrant_db`; **`""` in compose** → remote `qdrant` service | `.env` QDRANT_URL **ignored** |
+| `REDIS_URL` | `redis://{REDIS_HOST}:{REDIS_PORT}/0` from `.env`; **compose sets `redis://redis:6379/0`** | **FIXED** — explicit `REDIS_URL` wins, else built from `REDIS_HOST`/`REDIS_PORT` |
 | `MLFLOW_MODEL_LOADING` | `true` | Provenance-only load (§20) |
-| `MLFLOW_EVAL_REGISTRY_URI` | `sqlite:////home/youssef/Financial_RAG/mlflow.db` | `.env` MLFLOW_TRACKING_URI **ignored** |
+| `MLFLOW_EVAL_REGISTRY_URI` | native `sqlite:////home/youssef/Financial_RAG/mlflow.db`; **compose sets `http://mlflow:5000`** | `.env` MLFLOW_TRACKING_URI **ignored** |
 | `ENABLE_HYBRID_RETRIEVAL` / `ENABLE_POST_RETRIEVAL` | `true` / `true` | pipeline defaults construct with these through `model_loader` |
 | `ENABLE_PRE_RETRIEVAL` | **`false`** | feature disabled in production |
 | `RATE_LIMIT_ENABLED` | true (unless false in env) | test toggle |
@@ -719,29 +734,63 @@ mlflow_model_registry, mlflow_runs, Ingestion & Indexing.
 
 ## 23. Deployment / Runtime
 
-- **OS**: Native WSL2 Ubuntu on ext4 (`/home/youssef/Financial_RAG`); NTFS `/mnt/...`
-  avoided for CUDA/IO stability.
-- **Python**: 3.12.3 venv `Financial_env`; `torch==2.13.0+cu130` pinned with the cu130
-  index (plain PyPI cu13 SIGBUS-crashes on this WSL kernel / RTX 4050 Laptop GPU,
-  nvidia-smi 595.79).
-- **No Docker**: Qdrant runs embedded in-process (`QdrantClient(path=...)`); MongoDB and
-  Redis run as native WSL services.
-- **Services & ports**:
-  - MongoDB `mongod --fork --dbpath` (default dbpath `/var/lib/mongodb` or
-    `~/Financial_RAG/mongodb_data`), port 27017.
-  - Redis `redis-server` on 127.0.0.1:6379.
-  - Qdrant embedded (local `data/qdrant_db`).
-  - Backend `python -m uvicorn app.api.main:app --host 0.0.0.0 --port 8000` (typical:
-    `RATE_LIMIT_ENABLED=false SEED_SUPERADMIN=true`, nohup → `logs/e2e_api.log`).
-  - Arq worker (when `USE_ARQ_QUEUE=true`): `arq app.api.worker.WorkerSettings`.
-  - Frontend `cd frontend && npm run dev` (dev) / `npm run build && npm start`; default
-    API `http://localhost:8000`.
-  - Streamlit `streamlit run app/ui/streamlit_app.py` (port 8501, legacy).
-- **Startup sequence**: lifespan → `get_or_create_pipeline()` → warm-up (embed single
-  "warmup", reranker warm, Qdrant/Mongo/Redis ping) → `seed_super_admin()`.
-- **Live state at inspection (2026-09-06)**: only `redis-server` running; mongod down
-  (last checkpoint 2026-09-05 04:50), no uvicorn/arq process — dev environment is offline
-  between sessions.
+**Current runtime (verified 2026-09-07): fully containerized — Docker Compose project
+`financial-rag`**, launched with `docker compose up -d --build` from the repository root on
+WSL2 + Docker Desktop. The pre-container native deployment is preserved as **HISTORICAL** at the
+end of this section.
+
+- **Execution workflow**:
+  1. `cp .env.example .env` and fill in real values (Groq keys, `JWT_SECRET_KEY`,
+     `SUPERADMIN_EMAIL`/`SUPERADMIN_PASSWORD`). Compose interpolates `${...}` placeholders and
+     passes `.env` to the backend via `env_file`.
+  2. `docker compose up -d --build` — boots infra services in order; each must pass its health
+     check before dependents start (`depends_on: condition: service_healthy`), so `backend`
+     waits for mongo/redis/qdrant/mlflow and `frontend` waits for `backend`.
+  3. Verify: `docker compose ps` (all 6 `healthy`); `curl http://localhost:8000/health`; open
+     http://localhost:3000.
+- **Services, images & ports:**
+
+  | Compose service | Image / build | Published | Health check |
+  |---|---|---|---|
+  | `mongo` | `mongo:7` | — (internal) | `mongosh` `db.adminCommand('ping')` |
+  | `redis` | `redis:7-alpine` (`--appendonly yes`) | — (internal) | `redis-cli ping` |
+  | `qdrant` | `qdrant/qdrant:latest` (server mode, `/qdrant/storage`) | — (internal) | bash `/dev/tcp` probe on :6333 (image ships no curl) |
+  | `mlflow` | `ghcr.io/mlflow/mlflow:latest` (v3, `file:/mlflow`; `MLFLOW_ALLOW_FILE_STORE=true`) | — (internal) | HTTP :5000/health |
+  | `backend` | `app/Dockerfile` (python:3.12-slim, torch `2.13.0+cu130`, non-root UID 1000) | `8000:8000` | HTTP :8000/health; `start_period: 600s` (first boot downloads weights) |
+  | `frontend` | `frontend/Dockerfile` (node:20-alpine, `next build` → `next start`) | `3000:3000` | `wget --spider` on :3000 |
+  | `streamlit` | reuses `app/Dockerfile` | `8501:8501` | profile-only (`--profile streamlit up -d`) |
+
+- **GPU runtime**: the backend declares `deploy.resources.reservations.devices` (driver
+  `nvidia`, count 1, `capabilities: [gpu]`). `EmbeddingEngine` asserts CUDA at load
+  (`database_indexer.py:126-130`) — verified live on **NVIDIA GeForce RTX 4050 Laptop GPU**
+  (embedding + FP16 reranker both on `cuda`; Triton JIT compiles because `gcc`/`g++` are in the
+  runtime image). Dropping the GPU block requires a code change (no CPU embedding fallback).
+- **Persistence — named volumes** (survive `docker compose down`): `mongodb_data`, `redis_data`,
+  `qdrant_storage`, `mlflow_store` + `mlflow_artifacts`, `hf_models` (embedding/reranker cache at
+  `/opt/hf`), `nltk_data`, `rag_data` (raw corpus `/app/data`; seed with
+  `docker compose cp ./data/. backend:/app/data/`), `rag_logs`.
+- **Networks (isolated)**: `backend-net` — mongo/redis/qdrant/mlflow/backend (DB services are
+  **NOT published** to the host); `frontend-net` — frontend/streamlit ↔ backend. Only `8000` and
+  `3000` are published.
+- **Backend env (compose `environment` overrides `.env`)**: `MONGODB_URI=mongodb://mongo:27017/
+  financial_rag`, `REDIS_URL=redis://redis:6379/0`, `QDRANT_HOST=qdrant` + `QDRANT_PATH=""`
+  (empty → Qdrant **server** mode), `QDRANT_COLLECTION=financial_vectors`,
+  `MLFLOW_EVAL_REGISTRY_URI=http://mlflow:5000`, `USE_ARQ_QUEUE=false` (the arq-worker service is
+  commented out: in-memory `_INGESTION_TASKS` cannot report upload completion, §26.10).
+- **Startup sequence** (in-container): lifespan → `get_or_create_pipeline()` (MLflow Production
+  alias → direct init fallback) → warm-up (embed "warmup", reranker warm, Qdrant/Mongo/Redis
+  probes) → `seed_super_admin()`. The warm-up Qdrant probe logs a **non-blocking 404** until the
+  collection exists; `financial_vectors` is created lazily on first ingestion.
+- **Live state (verified 2026-09-07)**: all 6 containers `healthy`; `GET /health` → 200
+  (`mongodb: ok`, `redis: ok`); Qdrant responds but lists zero collections (fresh deploy);
+  frontend redirects `/` → `/login`.
+
+**HISTORICAL — native (pre-container) runtime.** Python 3.12.3 venv `Financial_env`; Qdrant
+embedded in-process (`QdrantClient(path="data/qdrant_db")`); MongoDB and Redis as native WSL
+services (`mongod --fork --dbpath`, `redis-server` on 127.0.0.1:6379); backend
+`python -m uvicorn app.api.main:app --host 0.0.0.0 --port 8000`; frontend `cd frontend && npm
+run dev` (dev) / `npm run build && npm start`; Streamlit on :8501. Retained for reference; the
+containerized workflow above is the default deployment.
 
 ---
 
@@ -785,8 +834,8 @@ mlflow_model_registry, mlflow_runs, Ingestion & Indexing.
 
 1. **`.env` key mismatch — partially fixed.** MongoDB (`MONGO_URI`/`MONGO_DB_NAME`) and
    Redis (`REDIS_HOST`/`REDIS_PORT`) legacy keys are now honoured by `config/settings.py`
-   (**FIXED 2026-09-06**). `QDRANT_URL` and `MLFLOW_TRACKING_URI` remain unread — Qdrant
-   uses `data/qdrant_db` and MLflow uses the SQLite registry.
+   (**FIXED 2026-09-06**). `QDRANT_URL` and `MLFLOW_TRACKING_URI` remain unread
+   (containers reach Qdrant/MLflow via the compose host+port overrides instead).
 2. **`/chat/stream` frontend call carries no JWT** (raw fetch in `ragStream.ts`); guest
    path is intended for Streamlit but the SPA relies on it too.
 3. **Session memory not concurrency-safe** (shared generator `_messages`, no lock) and
@@ -897,20 +946,35 @@ flowchart LR
     SSE --> AUDIT[rag_audit_logs via BackgroundTasks]
 ```
 
-**Deployment topology:**
+**Deployment topology (Docker Compose):**
 
 ```mermaid
 flowchart LR
-    subgraph WSL2 ext4
-      UI1[Next.js :3000] --> API[uvicorn :8000]
-      UI2[Streamlit :8501] --> API
-      API --> PIPE[FinancialRAGPipeline in-process]
-      PIPE --> QD[(Qdrant path-mode data/qdrant_db)]
-      PIPE --> MO[(MongoDB :27017)]
-      PIPE --> RD[(Redis :6379)]
-      RD --> ARQ[arq worker -- optional]
-      PIPE --> ML[MLflow sqlite mlflow.db]
+    USR[User browser] --> HOST
+    subgraph HOST["WSL2 / Docker Desktop — Compose project financial-rag"]
+        subgraph FNET["network: frontend-net"]
+            FE["frontend — Next.js :3000"]
+            ST["streamlit :8501 (profile-only)"]
+        end
+        subgraph BNET["network: backend-net"]
+            API["backend — FastAPI/uvicorn :8000"]
+            QD["qdrant :6333"]
+            MO["mongo :27017"]
+            RD["redis :6379"]
+            ML["mlflow :5000"]
+            ARQ["arq-worker (commented)"]
+        end
+        FE -->|frontend-net| API
+        ST -. profile .- API
+        API --> QD
+        API --> MO
+        API --> RD
+        API --> ML
+        ARQ -. optional .- RD
+        API --> PIPE[FinancialRAGPipeline in-process]
+        PIPE -. CUDA .-> GPU[GPU — NVIDIA RTX 4050]
     end
+    HOST -. "published: 8000 (API) · 3000 (UI)" .- USR
 ```
 
 ---
@@ -937,4 +1001,6 @@ Key deltas found during inspection (current code → old map):
 
 *Rebuilt 2026-09-06 from a full working-tree inspection of the current codebase. Git HEAD
 is `d3a39b9`; the working tree contains uncommitted fixes (Fix A/Fix B, settings, tests)
-that this document reflects as the current system.*
+that this document reflects as the current system. Updated 2026-09-07: Docker Compose
+containerization (docker-compose.yml, app/Dockerfile, frontend/Dockerfile, .dockerignore,
+frontend/.dockerignore, .env.example) — all 6 services verified healthy on GPU.*

@@ -1,0 +1,38 @@
+# Build context is the repository root (used by app/Dockerfile).
+# Keep the context small and never bake secrets or local state into the image.
+
+# Secrets & environment
+.env
+.env.*
+!.env.example
+
+# Local virtual environments / Python caches
+Financial_env
+venv_test
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local database / vector store data (persisted via docker volumes instead)
+data/
+mongodb_data/
+qdrant/
+mlflow.db
+mlruns/
+results/
+backups/
+tmp/
+
+# Artifacts & logs
+artifacts/
+logs/
+
+# Frontend (built by its own Dockerfile, frontend/Dockerfile)
+frontend/
+frontend.*
+node_modules/
+
+# Tests & docs (not shipped in the serve image)
+test/
+docs/
+*.md

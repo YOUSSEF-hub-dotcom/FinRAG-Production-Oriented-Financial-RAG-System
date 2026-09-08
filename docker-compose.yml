@@ -1,0 +1,264 @@
+# ---------------------------------------------------------------------------
+# Financial RAG — containerized stack
+#
+#   docker compose up -d --build
+#
+# Off-the-shelf services (official images):  mongo, redis, mlflow, qdrant
+# Custom services (multi-stage Dockerfiles): backend (app/Dockerfile),
+#                                            frontend (frontend/Dockerfile),
+#                                            streamlit (optional, profile)
+#
+# Secrets come from the repository .env (copied from .env.example); infra
+# topology (service DNS names) is hardcoded below and overrides .env.
+#
+# NOTE: run `cp .env.example .env` and fill real values before starting.
+# Database services are intentionally NOT published to the host.
+# ---------------------------------------------------------------------------
+
+name: financial-rag
+
+services:
+  # ------------------------------------------------------------------------
+  # Off-the-shelf: MongoDB (chunk store + auth/audit)
+  # ------------------------------------------------------------------------
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes: [mongodb_data:/data/db]
+    networks: [backend-net]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ------------------------------------------------------------------------
+  # Off-the-shelf: Redis (rate limiting + optional Arq intake queue)
+  # ------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes: [redis_data:/data]
+    networks: [backend-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ------------------------------------------------------------------------
+  # Off-the-shelf: Qdrant (vector store; server mode — backend connects via
+  # QDRANT_HOST/QDRANT_PORT with QDRANT_PATH left empty).
+  # ------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:latest   # pin to the qdrant-client server version in use
+    restart: unless-stopped
+    environment:
+      QDRANT__STORAGE__STORAGE_PATH: /qdrant/storage
+      QDRANT__LOG_LEVEL: INFO
+    volumes: [qdrant_storage:/qdrant/storage]
+    networks: [backend-net]
+    healthcheck:
+      # The qdrant image ships no curl/wget/python — use a bash TCP probe.
+      # (Requires a listening REST port; /readyz needs an HTTP client.)
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ------------------------------------------------------------------------
+  # Off-the-shelf: MLflow Tracking/Registry server
+  # (client version pinned in requirements.txt: mlflow==3.15.1)
+  # ------------------------------------------------------------------------
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest   # pin to mlflow==3.15.1 for parity
+    restart: unless-stopped
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri file:/mlflow
+      --default-artifact-root file:/mlflow/artifacts
+    environment:
+      # mlflow v3.x moved the filesystem backend to maintenance mode; re-enable
+      # it for the simple single-node file store mounted at /mlflow. Remove if
+      # you migrate to a SQL/DB tracking backend.
+      MLFLOW_ALLOW_FILE_STORE: "true"
+    volumes:
+      - mlflow_store:/mlflow
+      - mlflow_artifacts:/mlflow/artifacts
+    networks: [backend-net]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=5).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ------------------------------------------------------------------------
+  # Custom: FastAPI backend (app/Dockerfile, multi-stage)
+  # ------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Infra topology (service DNS names) — overrides any .env values.
+      MONGODB_URI: mongodb://mongo:27017/financial_rag
+      MONGODB_DB: financial_rag
+      REDIS_URL: redis://redis:6379/0
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+      # Empty QDRANT_PATH switches QdrantIndexer to remote server mode.
+      QDRANT_PATH: ""
+      QDRANT_COLLECTION: financial_vectors
+      MLFLOW_EVAL_REGISTRY_URI: http://mlflow:5000
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      DATA_DIR: /app/data
+      LOG_DIR: /app/logs
+      # Secrets (from .env via interpolation, harmless defaults if absent)
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      LLAMA_CLOUD_API_KEY: ${LLAMA_CLOUD_API_KEY:-}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-only-insecure-secret}
+      SUPERADMIN_EMAIL: ${SUPERADMIN_EMAIL:-admin@financial-rag.local}
+      SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:-SuperAdmin!123}
+      SEED_SUPERADMIN: ${SEED_SUPERADMIN:-true}
+      # Model behavior (embedding device is hardcoded CUDA in EmbeddingEngine)
+      RERANKER_DTYPE: float16
+      USE_ARQ_QUEUE: "false"
+    volumes:
+      - hf_models:/opt/hf            # embedding/reranker model cache
+      - nltk_data:/opt/nltk_data     # NLTK punkt tokenizer data
+      - rag_data:/app/data           # raw corpus (seed via docker compose cp)
+      - rag_logs:/app/logs
+    networks: [backend-net, frontend-net]
+    depends_on:
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      qdrant: { condition: service_healthy }
+      mlflow: { condition: service_healthy }
+    ports: ["8000:8000"]
+    # GPU support requires the NVIDIA host driver + nvidia-container-toolkit
+    # (or Docker Desktop WSL2 with WSL integration enabled). Remove this block
+    # only if you accept CUDA being unavailable (embedding engine asserts CUDA).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).status == 200 else 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 600s   # cold first-boot: warmup blocks startup while downloading embedding + reranker weights
+
+  # ------------------------------------------------------------------------
+  # Custom: Next.js frontend (frontend/Dockerfile, multi-stage)
+  # ------------------------------------------------------------------------
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+      args:
+        # Baked into the client bundle at build time; the browser reaches the
+        # API through the published host port.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    restart: unless-stopped
+    environment:
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+    networks: [frontend-net]
+    depends_on:
+      backend: { condition: service_healthy }
+    ports: ["3000:3000"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ------------------------------------------------------------------------
+  # Optional CLI dashboard (reuses the backend image). Start with:
+  #   docker compose --profile streamlit up -d
+  # ------------------------------------------------------------------------
+  streamlit:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    profiles: ["streamlit"]
+    restart: unless-stopped
+    command: streamlit run app/ui/streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+    env_file:
+      - path: .env
+        required: false
+    networks: [frontend-net]
+    depends_on:
+      backend: { condition: service_healthy }
+    ports: ["8501:8501"]
+
+  # ------------------------------------------------------------------------
+  # Optional Arq intake worker (Redis-backed queue). Keep disabled unless you
+  # specifically want queued ingestion: with USE_ARQ_QUEUE=true the in-memory
+  # task store cannot report upload completion to the frontend, and task state
+  # is lost on restart (see PROJECT_MAP.md). Enable BOTH the var above and
+  # this service deliberately:
+  #
+  # arq-worker:
+  #   build:
+  #     context: .
+  #     dockerfile: app/Dockerfile
+  #   restart: unless-stopped
+  #   command: arq app.api.worker.WorkerSettings
+  #   env_file:
+  #     - path: .env
+  #       required: false
+  #   environment:
+  #     MONGODB_URI: mongodb://mongo:27017/financial_rag
+  #     MONGODB_DB: financial_rag
+  #     REDIS_URL: redis://redis:6379/0
+  #     QDRANT_HOST: qdrant
+  #     QDRANT_PORT: "6333"
+  #     QDRANT_PATH: ""
+  #     QDRANT_COLLECTION: financial_vectors
+  #     MLFLOW_EVAL_REGISTRY_URI: http://mlflow:5000
+  #     MLFLOW_TRACKING_URI: http://mlflow:5000
+  #     DATA_DIR: /app/data
+  #     USE_ARQ_QUEUE: "true"
+  #   volumes:
+  #     - hf_models:/opt/hf
+  #     - nltk_data:/opt/nltk_data
+  #     - rag_data:/app/data
+  #     - rag_logs:/app/logs
+  #   networks: [backend-net]
+  #   depends_on:
+  #     mongo: { condition: service_healthy }
+  #     redis: { condition: service_healthy }
+  #     qdrant: { condition: service_healthy }
+  #     mlflow: { condition: service_healthy }
+  # ------------------------------------------------------------------------
+
+networks:
+  backend-net:      # infra + backend (DB services are NOT reachable from the host)
+  frontend-net:     # frontend/streamlit <-> backend
+
+volumes:
+  mongodb_data:
+  redis_data:
+  qdrant_storage:
+  mlflow_store:
+  mlflow_artifacts:
+  hf_models:
+  nltk_data:
+  rag_data:         # raw corpus; seed with: docker compose cp ./data/. backend:/app/data/
+  rag_logs:

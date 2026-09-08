@@ -1032,7 +1032,8 @@ async def health(request: Request):
     # MongoDB check
     try:
         import pymongo
-        client = pymongo.MongoClient("mongodb://localhost:27017", serverSelectionTimeoutMS=2000)
+        from config.settings import MONGODB_URI
+        client = pymongo.MongoClient(MONGODB_URI, serverSelectionTimeoutMS=2000)
         client.admin.command("ping")
         client.close()
         services.mongodb = "ok"

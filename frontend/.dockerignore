@@ -1,0 +1,10 @@
+# Frontend build context — keep it lean and never bake secrets in.
+node_modules/
+.next/
+out/
+npm-debug.log*
+.git/
+.env*
+.dockerignore
+README.md
+Dockerfile

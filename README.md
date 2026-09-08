@@ -28,6 +28,43 @@ Financial RAG ingests SEC 10-K filings (HTML/SGML/TXT/IPCCs) and API uploads (PD
 
 ---
 
+## Quick Start with Docker
+
+The full stack is containerized with **Docker Compose** (project `financial-rag`) — 6 active
+services: the FastAPI backend, Next.js frontend, MongoDB 7, Redis 7, Qdrant, and MLflow, plus an
+optional Streamlit profile.
+
+1. **Prepare the environment** — `cp .env.example .env`, then fill in real values
+   (`GROQ_API_KEY`, `LLAMA_CLOUD_API_KEY`, `JWT_SECRET_KEY`,
+   `SUPERADMIN_EMAIL`/`SUPERADMIN_PASSWORD`). Compose interpolates these into the backend
+   container; the frontend time-bakes `NEXT_PUBLIC_API_URL` at build. Env detail:
+   [Project Map §17](PROJECT_MAP.md#17-configuration-architecture).
+2. **Launch the stack** — `docker compose up -d --build` from the repository root. Infra
+   services boot in order and must pass their health checks before the backend starts; the
+   backend (`start_period: 600s` — first boot downloads embedding + reranker weights) gates the
+   frontend.
+3. **Verify** —
+   - `docker compose ps` → all 6 services report `healthy`.
+   - API health: `curl http://localhost:8000/health` → `{"status":"ok",...}`.
+   - UI: http://localhost:3000 → login page (the admin account is seeded from
+     `SUPERADMIN_EMAIL`/`SUPERADMIN_PASSWORD`).
+4. **Seed the corpus** — the `rag_data` volume starts empty; copy the corpus with
+   `docker compose cp ./data/. backend:/app/data/`, then upload documents via the UI. The first
+   ingestion lazily creates the Qdrant `financial_vectors` collection.
+5. **Optional** — Streamlit legacy UI: `docker compose --profile streamlit up -d` (port 8501).
+
+**Persistence & isolation:** data lives in named volumes (`mongodb_data`, `redis_data`,
+`qdrant_storage`, `mlflow_store`, `mlflow_artifacts`, `hf_models`, `nltk_data`, `rag_data`,
+`rag_logs`) that survive `docker compose down`. Database services sit on the isolated
+`backend-net` and are **not** published to the host; only ports `8000` (API) and `3000` (UI)
+are exposed. The backend container requests the NVIDIA GPU (verified on the RTX 4050) for
+embedding/reranking.
+
+See **[Project Map §23](PROJECT_MAP.md#23-deployment--runtime)** for the full service matrix,
+health checks, and volume inventory.
+
+---
+
 ## What the System Can Do
 
 Every item below is implemented and used by the default production configuration (see **[Project Map §3](PROJECT_MAP.md#3-system-capabilities)** and §26 for the known-limitation caveats).
@@ -188,11 +225,12 @@ Results are labeled by evidence strength. See **[Project Map §21](PROJECT_MAP.m
 | LLM judge (eval only) | `qwen/qwen3.6-27b` (primary), `openai/gpt-oss-120b` (fallback) |
 | Embeddings | `nomic-ai/nomic-embed-text-v1.5` (768-dim, CUDA) |
 | Reranker | `BAAI/bge-reranker-large` cross-encoder (FP16 default, FP32 CPU fallback) |
-| Vector database | Qdrant (embedded `path=` local mode, `financial_vectors`, 768-dim Cosine, HNSW) |
-| Document / datastore | MongoDB (`raw_chunks`, `users`, `rag_audit_logs`) |
-| Cache / queue / rate-limit / auth-blacklist | Redis |
-| ML / evaluation / observability | MLflow (SQLite), RAGAS-style judge evaluator, structured JSON logging, per-request Mongo audit |
-| Infrastructure / development | Python 3.12, torch 2.13.0+cu130, WSL2 native (ext4), no Docker (Qdrant embedded; Mongo/Redis native services) |
+| Vector database | Qdrant server container (compose `qdrant` service, :6333; `financial_vectors`, 768-dim Cosine, HNSW) |
+| Document / datastore | MongoDB 7 container (compose `mongo` service; `raw_chunks`, `users`, `rag_audit_logs`) |
+| Cache / queue / rate-limit / auth-blacklist | Redis 7 container (compose `redis` service) |
+| ML / evaluation / observability | MLflow server container (compose `mlflow` service, :5000, file store), RAGAS-style judge evaluator, structured JSON logging, per-request Mongo audit |
+| Containerization / deployment | Docker + Docker Compose (project `financial-rag`, 6 active services), multi-stage images (`app/Dockerfile`, `frontend/Dockerfile`), named volumes, isolated `backend-net`/`frontend-net` networks, healthcheck-gated boot ordering |
+| Infrastructure / development | Python 3.12, torch 2.13.0+cu130, WSL2 native (ext4) + Docker Desktop; CUDA (NVIDIA RTX 4050) is consumed inside the backend container |
 
 ---
 
