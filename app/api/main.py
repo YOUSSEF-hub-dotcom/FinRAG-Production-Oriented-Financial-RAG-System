@@ -28,7 +28,7 @@ from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 
 from config.logging_config import get_logger
-from config.settings import DATA_DIR, SUPPORTED_TICKERS, USE_ARQ_QUEUE
+from config.settings import DATA_DIR, GUARDRAIL_ENFORCE, SUPPORTED_TICKERS, USE_ARQ_QUEUE
 
 # Ensure src subdirectories are importable (numbered names not valid packages)
 _src_root = Path(__file__).resolve().parent.parent.parent / "src"
@@ -75,6 +75,68 @@ logger = get_logger("api.main")
 
 
 # ---------------------------------------------------------------------------
+# Upload identity + safe persistence helpers (D6-A)
+# ---------------------------------------------------------------------------
+
+_UNSAFE_PATH_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_path_component(value: Any, default: str = "unknown") -> str:
+    """Sanitize a single path segment to prevent traversal / odd characters."""
+    cleaned = _UNSAFE_PATH_CHARS.sub("_", str(value).strip()).strip("._")
+    return cleaned or default
+
+
+def _resolve_upload_identity(raw_bytes: bytes, source_id: str | None) -> str | None:
+    """Resolve the logical-filing ``source_id`` for an upload.
+
+    An explicitly supplied ``source_id`` wins; otherwise a single validated SEC
+    accession number is extracted from the filing header. Returns ``None`` when
+    identity cannot be determined unambiguously (never guessed).
+    """
+    if source_id:
+        return source_id
+    from metadata_extractor import extract_accession
+
+    preview = raw_bytes[:200_000].decode("utf-8", errors="replace")
+    return extract_accession(None, preview)
+
+
+def _resolve_upload_save_path(
+    ticker: str,
+    fiscal_year: str,
+    filename: str,
+    source_id: str | None,
+    doc_type: str | None,
+) -> Path:
+    """Return a non-colliding destination path for an uploaded document.
+
+    Legacy layout is preserved when no ``source_id`` is supplied:
+    ``DATA_DIR/{ticker}/10-K/{fiscal_year}/{filename}``. When identity is known
+    the file is isolated under ``.../{doc_type|10-K}/{fiscal_year}/{source_id}/``
+    so re-uploads of the same filing overwrite intentionally while distinct
+    filings never collide. A filename collision appends a short uuid prefix so
+    an existing file is never silently overwritten.
+    """
+    doc_segment = _safe_path_component(doc_type or "10-K", default="10-K")
+    save_dir = (
+        DATA_DIR
+        / _safe_path_component(ticker)
+        / doc_segment
+        / _safe_path_component(fiscal_year)
+    )
+    if source_id:
+        save_dir = save_dir / _safe_path_component(source_id)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = Path(filename).name
+    target = save_dir / safe_name
+    if target.exists():
+        target = save_dir / f"{uuid.uuid4().hex[:8]}_{safe_name}"
+    return target
+
+
+# ---------------------------------------------------------------------------
 # Application factory
 # ---------------------------------------------------------------------------
 
@@ -85,6 +147,9 @@ async def _lifespan(app: FastAPI):
 
     # Dynamic loading: tries MLflow Production alias, falls back to direct init
     pipeline = get_or_create_pipeline()
+    # Fail fast if enforcement is enabled but the guardrail is unavailable:
+    # otherwise financial/rewrite answers would be released unverified.
+    _validate_guardrail_config(pipeline)
     app.state.pipeline = pipeline
     app.state.warmup_completed = False
 
@@ -249,12 +314,12 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    t0 = time.time()
+    t0 = time.perf_counter()
     request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
     request.state.request_id = request_id
 
     response = await call_next(request)
-    elapsed_ms = (time.time() - t0) * 1000
+    elapsed_ms = _elapsed_ms(t0)
     response.headers["X-Request-ID"] = request_id
     logger.info(
         "api_request request_id=%s method=%s path=%s status=%d elapsed_ms=%.1f",
@@ -369,6 +434,21 @@ _AUDIT_SCORE_FLOOR = 0.40  # cosine below this ~ irrelevant context
 _AUDIT_SCORE_CEIL = 0.85   # cosine at/above this ~ near-duplicate relevance
 
 
+# --- Latency measurement (monotonic) + clamping (D3) -------------------------
+# Durations are measured with ``time.perf_counter()`` (monotonic, immune to wall
+# clock steps) and clamped to a sane band so a stuck/clock-anomalous request can
+# never persist a negative or hour-scale latency into the audit trail.
+_MAX_LATENCY_MS = 600_000.0  # 10 minutes
+
+
+def _elapsed_ms(start: float) -> float:
+    """Return clamped elapsed milliseconds since a ``perf_counter()`` mark."""
+    elapsed = (time.perf_counter() - start) * 1000
+    if elapsed < 0:
+        return 0.0
+    return elapsed if elapsed <= _MAX_LATENCY_MS else _MAX_LATENCY_MS
+
+
 # --- Ingestion task status registry ------------------------------------------
 # Tracks background ingestion tasks so the frontend can poll their progress via
 # GET /api/v1/documents/tasks/{task_id}. In-memory because ingestion runs
@@ -394,57 +474,159 @@ def _normalize_audit_score(raw: Any) -> float:
     return round(min(max(normalized, 0.0), 1.0), 4)
 
 
+def _context_chunk_citation_score(ctx: dict, citation: str) -> int:
+    """Score one request-context chunk against an LLM citation string.
+
+    Matches on metadata tokens (ticker/fiscal_year/section) plus a light
+    content-token overlap, so a chunk is only ranked for an LLM citation when
+    there is genuine signal — never a bare ticker coincidence. Neutral chunks
+    score 0 (they are not excluded; they just rank below clearly-cited chunks).
+    """
+    if not citation:
+        return 0
+    payload_ = ctx.get("payload") or {}
+    cit = citation.lower()
+    rel = 0
+    tk = _clean_meta_str(payload_.get("ticker")).lower()
+    fy = _clean_meta_str(payload_.get("fiscal_year")).lower()
+    sec = _clean_meta_str(payload_.get("section")).lower()
+    if tk and tk in cit:
+        rel += 3
+    if fy and fy in cit:
+        rel += 2
+    if sec and len(sec) > 2 and sec in cit:
+        rel += 1
+    head = _strip_internal_markers(
+        str(payload_.get("raw_text") or payload_.get("text") or "")
+    )[:200].lower()
+    overlap = {w for w in head.replace("$", " ").split() if len(w) > 4} & set(cit.split())
+    if len(overlap) >= 2:
+        rel += 2
+    return rel
+
+
+def _rank_contexts_by_citations(
+    contexts: list[dict],
+    citation_strings: list[str],
+) -> list[dict]:
+    """Order request-scoped context chunks, LLM-cited chunks first.
+
+    ``contexts`` is the exact retrieval/grounding set for THIS request. Only
+    chunks present in it can ever be ranked or returned — unrelated chunks from
+    a prior query/cache cannot leak in. Ordering is a stable sort by
+    (citation-match score desc, retrieval score desc). Contexts without any
+    citation signal keep their retrieval-score ordering.
+    """
+    best: dict[str, int] = {}
+    for citation in (citation_strings or []):
+        if not citation or not citation.strip():
+            continue
+        top_cid, top_rel = None, 0
+        for ctx in contexts:
+            cid = str(ctx.get("chunk_id") or "")
+            if not cid:
+                continue
+            rel = _context_chunk_citation_score(ctx, citation)
+            if rel > top_rel:
+                top_cid, top_rel = cid, rel
+        if top_cid:
+            best[top_cid] = max(best.get(top_cid, 0), top_rel)
+
+    def _rank(ctx: dict) -> tuple[int, float]:
+        cid = str(ctx.get("chunk_id") or "")
+        return (best.get(cid, 0), float(ctx.get("score") or 0.0))
+
+    return sorted(contexts, key=_rank, reverse=True)
+
+
+def _source_record_from_context(ctx: dict, snippet: int = 800) -> dict:
+    """Build a client-facing source record from one request-context chunk.
+
+    Metadata that is missing/incomplete is emitted as an empty string (never
+    fabricated); the chunk_id is always the real retrieved chunk id.
+    """
+    payload_ = ctx.get("payload") or {}
+    content = str(payload_.get("raw_text") or payload_.get("text") or "")[:snippet]
+    return {
+        "chunk_id": str(ctx.get("chunk_id") or ""),
+        "text": _strip_internal_markers(content) if content else "",
+        "score": float(ctx.get("score") or 0.0),
+        "ticker": _clean_meta_str(payload_.get("ticker")),
+        "fiscal_year": _clean_meta_str(payload_.get("fiscal_year")),
+        "section": _clean_meta_str(payload_.get("section")),
+        "source_file": _clean_meta_str(payload_.get("source_file")),
+        "page_number": payload_.get("page_number"),
+    }
+
+
+def _build_stream_sources(
+    raw_source_strings: list[str],
+    request_contexts: list[dict],
+    limit: int = 6,
+) -> list[dict]:
+    """Build the SSE ``sources`` payload strictly from THIS request's context.
+
+    Rejects empty contexts (no sources emitted rather than fabricating one),
+    deduplicates by chunk_id, and never consults pipeline-global stores.
+    """
+    good = [ctx for ctx in (request_contexts or []) if (ctx.get("chunk_id") or "").strip()]
+    if not good:
+        return []
+    ordered = _rank_contexts_by_citations(good, raw_source_strings)
+    seen: set[str] = set()
+    sources: list[dict] = []
+    for ctx in ordered:
+        cid = str(ctx.get("chunk_id") or "")
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        sources.append(_source_record_from_context(ctx))
+        if len(sources) >= limit:
+            break
+    return sources
+
+
 def _build_sources(result: dict[str, Any]) -> list[SourceCitation]:
     """Extract source citations from pipeline result.
 
-    Deduplicates by chunk_id (preserving order). Uses MongoDB metadata
-    as fallback when the LLM citation format is incomplete or has
-    N/A/UNKNOWN section labels.
+    Sources are built from the per-request ``retrieved_chunks`` grounding
+    context populated by ``query()``. LLM citation strings (e.g.
+    "NVIDIA - 2026 - Revenue") are used ONLY to reorder that same context via
+    token matching — they are never themselves emitted as chunk ids, so a
+    stale/unrelated citation can never surface. Missing metadata degrades to
+    empty values; an empty context yields no citations.
     """
+    retrieved = result.get("retrieved_chunks") or []
+    good = [c for c in retrieved if (c.get("chunk_id") or "").strip()]
+    if not good:
+        return []
+
+    parsed = result.get("parsed")
+    citation_strings: list[str] = []
+    if parsed is not None and hasattr(parsed, "sources"):
+        citation_strings = list(parsed.sources or [])
+    ordered = _rank_contexts_by_citations(good, citation_strings)
+
     seen: set[str] = set()
     sources: list[SourceCitation] = []
-    parsed = result.get("parsed")
-
-    # Build a metadata lookup from retrieved chunks
-    retrieved = result.get("retrieved_chunks") or []
-    meta_lookup: dict[str, dict] = {}
-    for chunk in retrieved:
-        cid = chunk.get("chunk_id", "")
-        if cid:
-            meta_lookup[cid] = chunk
-
-    if parsed is not None and hasattr(parsed, "sources"):
-        for src_str in parsed.sources:
-            if not src_str or src_str in seen:
-                continue
-            seen.add(src_str)
-            parts = src_str.split(" - ")
-            ticker = parts[0].strip() if len(parts) > 0 else "UNKNOWN"
-            fiscal_year = parts[1].strip() if len(parts) > 1 else "UNKNOWN"
-            section = parts[2].strip() if len(parts) > 2 else "General"
-
-            # Enrich from MongoDB metadata when available
-            chunk_meta = meta_lookup.get(src_str, {})
-            if chunk_meta:
-                ticker = chunk_meta.get("ticker", ticker) or ticker
-                fiscal_year = chunk_meta.get("fiscal_year", fiscal_year) or fiscal_year
-                section = chunk_meta.get("section", section) or section
-
-            # Clean trailing N/A / UNKNOWN fragments from section labels
-            if section in ("N/A", "UNKNOWN", ""):
-                section = "General"
-
-            # Purge internal placeholder/marker artifacts (%%TABLE_N%%, [TABLE N]).
-            section = _strip_internal_markers(section) or "General"
-
-            sources.append(SourceCitation(
-                chunk_id=src_str,
-                score=1.0,
-                ticker=ticker,
-                fiscal_year=fiscal_year,
-                section=section,
-                text_snippet=_strip_internal_markers(src_str)[:300],
-            ))
+    for ctx in ordered:
+        cid = str(ctx.get("chunk_id") or "")
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        payload_ = ctx.get("payload") or {}
+        sources.append(SourceCitation(
+            chunk_id=cid,
+            score=min(float(ctx.get("score") or 0.0), 1.0),
+            ticker=_clean_meta_str(payload_.get("ticker")) or "UNKNOWN",
+            fiscal_year=_clean_meta_str(payload_.get("fiscal_year")) or "UNKNOWN",
+            section=_clean_meta_str(payload_.get("section")) or "General",
+            text_snippet=_strip_internal_markers(
+                str(payload_.get("raw_text") or payload_.get("text") or "")[:300]
+            ),
+        ))
+        if len(sources) >= 6:
+            break
     return sources
 
 
@@ -467,8 +649,30 @@ def _build_audit_event(
     Best-effort extraction: the pipeline exposes different telemetry keys across
     code paths, so every section degrades gracefully when a field is missing.
     """
-    # --- retrieved chunks (ids, scores, metadata, ticker tags) ---
-    retrieved = result.get("retrieved_chunks") or []
+    # --- retrieved chunks (ids, NORMALIZED scores, metadata, ticker tags) ---
+    # D4: persist the same normalized [0,1] score the stream path writes
+    # (``_normalize_audit_score``) and drop scoreless/injected chunks, so the
+    # analytics context-quality buckets are comparable across both paths.
+    retrieved_context = result.get("retrieved_chunks") or []
+    retrieved: list[dict[str, Any]] = []
+    for ctx in retrieved_context:
+        try:
+            raw_score = float(ctx.get("score") or 0.0)
+        except (TypeError, ValueError):
+            raw_score = 0.0
+        if raw_score <= 0:
+            continue
+        payload_ = ctx.get("payload") or {}
+        retrieved.append(
+            {
+                "chunk_id": str(ctx.get("chunk_id") or ""),
+                "score": _normalize_audit_score(raw_score),
+                "ticker": _clean_meta_str(payload_.get("ticker")),
+                "fiscal_year": _clean_meta_str(payload_.get("fiscal_year")),
+                "section": _clean_meta_str(payload_.get("section")),
+                "ticker_tag": _clean_meta_str(payload_.get("ticker")) or "UNKNOWN",
+            }
+        )
     if not retrieved and result.get("parsed") is not None:
         parsed = result["parsed"]
         if hasattr(parsed, "sources"):
@@ -488,7 +692,13 @@ def _build_audit_event(
         "model_cost_usd": result.get("cost_usd"),
         "model_used": result.get("model_used", "unknown"),
         "cache_hit": result.get("cache_hit", False),
-        "guardrail_status": "passed" if result.get("guardrail_passed", True) else "failed",
+        # D1: persist the REAL verdict. ``not_run`` covers paths where the
+        # guardrail never executed (disabled, GENERAL route, security halt) so
+        # analytics can never mistake an unverified answer for a PASS.
+        "guardrail_status": result.get("guardrail_status", "not_run"),
+        # True only when enforcement changed the delivered answer (FAIL swap or
+        # evaluator-error withhold); always False while advisory.
+        "guardrail_enforced": bool(result.get("guardrail_enforced", False)),
         "errors": result.get("error"),
     }
 
@@ -523,6 +733,108 @@ def _schedule_audit_log(background_tasks: BackgroundTasks, event: AuditLogEvent)
         background_tasks.add_task(audit_logger.log_event, event)
 
 
+# Distinct from the guardrail's FAIL fallback (SAFE_FALLBACK): delivered when
+# enforcement is ON but the evaluator ERRORED / TIMED OUT, so no verdict exists.
+# This is the only way to avoid presenting unverified content as though it had
+# been checked -- the SSE contract has no separate status channel.
+GUARDRAIL_UNAVAILABLE_MESSAGE = (
+    "I couldn't verify this answer against the source data, so I'm not "
+    "returning an unverified response. Please try again."
+)
+
+
+def _validate_guardrail_config(pipeline: Any) -> None:
+    """Fail fast on contradictory config: enforcement on, guardrail unavailable.
+
+    A financial/rewrite request must be verifiable while ``GUARDRAIL_ENFORCE``
+    is enabled; if the loaded pipeline has the guardrail disabled or absent its
+    answers would be released unverified. Since the default advisory
+    configuration (``GUARDRAIL_ENFORCE=false``) makes this a no-op, only an
+    explicit contradictory configuration is rejected.
+
+    Uses strict identity checks (``is not True`` / ``is None``) rather than
+    generic truthiness so a ``MagicMock`` or any unexpected object cannot pass
+    the guard accidentally.
+    """
+    if not GUARDRAIL_ENFORCE:
+        return
+    enabled = getattr(pipeline, "_enable_guardrail", None)
+    guardrail = getattr(pipeline, "_guardrail", None)
+    if enabled is not True or guardrail is None:
+        raise RuntimeError(
+            "Invalid configuration: GUARDRAIL_ENFORCE=true but the loaded "
+            "pipeline has the guardrail disabled or unavailable "
+            f"(enable_guardrail={enabled!r}, guardrail={type(guardrail).__name__}). "
+            "Financial answers would be released unverified. Set "
+            "GUARDRAIL_ENFORCE=false or construct the pipeline with "
+            "enable_guardrail=True."
+        )
+
+
+def _guardrail_should_swap(status: Any, final_output: Any) -> bool:
+    """Opt-in enforcement predicate shared by the sync and streaming paths.
+
+    Only a *definite* FAIL (``status == "failed"``) that carries a safe fallback
+    triggers a swap. ``error`` (evaluator crash/timeout) and ``not_run``
+    (guardrail disabled, GENERAL route, security halt) never swap -- the
+    evaluator failed, not the LLM -- and are never treated as a PASS. Advisory
+    by default: with ``GUARDRAIL_ENFORCE`` disabled this always returns False.
+    """
+    return bool(GUARDRAIL_ENFORCE and status == "failed" and final_output)
+
+
+def _guardrail_should_withhold(status: Any) -> bool:
+    """True when enforcement must NOT release the generated answer.
+
+    Only for an evaluator ERROR / timeout: verification ran but produced no
+    verdict, so releasing the answer would present unverified content as though
+    it had been checked. ``failed`` is handled separately by the safe-fallback
+    swap. ``not_run`` is *not* withheld -- it means no verification was attempted
+    (guardrail disabled, non-financial route, security halt), which is a
+    deliberate, already-safe response rather than an evaluator fault.
+    """
+    return bool(GUARDRAIL_ENFORCE and status in ("error", "timeout"))
+
+
+def _apply_guardrail_enforcement(
+    result: dict[str, Any], answer: str, sources: list
+) -> tuple[str, list, bool]:
+    """Apply the guardrail delivery policy to the delivered (answer, sources).
+
+    Advisory by default (``GUARDRAIL_ENFORCE`` off): the generated answer is
+    returned unchanged; the verdict is only reported/persisted. When enforcing:
+      * definite FAIL            -> safe fallback, sources cleared;
+      * evaluator ERROR / timeout -> withhold the unverified answer and deliver a
+        distinct "verification unavailable" notice, sources cleared;
+      * PASS / not_run           -> deliver the generated answer.
+    Returns ``(answer, sources, enforced)``; ``enforced`` is True only when
+    enforcement changed what is delivered (FAIL swap or error withhold).
+    """
+    status = result.get("guardrail_status")
+    final_output = result.get("guardrail_final_output")
+    if _guardrail_should_swap(status, final_output):
+        return final_output, [], True
+    if _guardrail_should_withhold(status):
+        return GUARDRAIL_UNAVAILABLE_MESSAGE, [], True
+    return answer, sources, False
+
+
+def _sanitize_session_memory(pipe, delivered_answer: str) -> None:
+    """Redact the last assistant turn when enforcement replaced the answer.
+
+    Without this, a FAIL-swapped or ERROR-withheld response would still leave the
+    *unverified* generated answer in the session's conversation memory, where a
+    later turn could treat it as trusted history.
+    """
+    memory = getattr(getattr(pipe, "_generator", None), "memory", None)
+    if memory is None:
+        return
+    try:
+        memory.replace_last_ai(delivered_answer)
+    except Exception:
+        logger.warning("Session memory sanitize failed (non-blocking)", exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -537,7 +849,7 @@ async def chat(
     _user: str | None = Depends(get_current_user),
 ):
     """Main RAG query endpoint (rate-limited: 10 req/min per user/IP)."""
-    t0 = time.time()
+    t0 = time.perf_counter()
     pipe = _get_pipeline(request)
     _restore_session_memory(pipe, payload.session_id)
     request_id = getattr(request.state, "request_id", "unknown")
@@ -559,9 +871,8 @@ async def chat(
         session_id=payload.session_id,
         tickers=payload.tickers,
     )
-    _persist_session_memory(pipe, payload.session_id)
 
-    elapsed = (time.time() - t0) * 1000
+    elapsed = _elapsed_ms(t0)
     answer = result.get("raw_output", "")
     parsed = result.get("parsed")
     if parsed is not None and hasattr(parsed, "answer"):
@@ -571,6 +882,22 @@ async def chat(
     answer = _strip_internal_markers(answer)
 
     sources = _build_sources(result)
+
+    # D1 enforcement (opt-in via GUARDRAIL_ENFORCE): a definite FAIL replaces
+    # the delivered answer with the guardrail's safe fallback; an evaluator
+    # ERROR/timeout withholds the unverified answer behind a distinct notice.
+    # Default (advisory) keeps the answer text while still reporting/persisting
+    # the real verdict below.
+    answer, sources, guardrail_enforced = _apply_guardrail_enforcement(
+        result, answer, sources
+    )
+    result["guardrail_enforced"] = guardrail_enforced
+    # Memory is written AFTER enforcement so that, when enforcement replaced or
+    # withheld the answer, the unverified generated answer is never retained as
+    # trusted conversational history (correct session isolation is unchanged).
+    if guardrail_enforced:
+        _sanitize_session_memory(pipe, answer)
+    _persist_session_memory(pipe, payload.session_id)
 
     # --- Asynchronous audit logging (fire-and-forget) ---
     audit_event = _build_audit_event(
@@ -588,7 +915,12 @@ async def chat(
         answer=answer,
         sources=sources,
         execution_time_ms=round(elapsed, 2),
-        guardrail_status=GuardrailStatus(passed=True),
+        guardrail_status=GuardrailStatus(
+            passed=bool(result.get("guardrail_passed", False)),
+            status=result.get("guardrail_status", "not_run"),
+            verified_claims=result.get("guardrail_verified_claims", []),
+            failed_claims=result.get("guardrail_failed_claims", []),
+        ),
         model_used=result.get("model_used", "unknown"),
         cache_hit=result.get("cache_hit", False),
         request_id=request_id,
@@ -619,6 +951,16 @@ async def chat_stream(
 
     from sse_starlette.sse import EventSourceResponse
 
+    # Per-request grounding context filled by query_stream() via context_sink.
+    # Sources/citations are derived ONLY from this list so a parallel or prior
+    # query's context (the shared pipeline slot) can never leak into this
+    # response.
+    request_contexts: list[dict] = []
+    # Per-request guardrail verdict, filled by query_stream() via guardrail_sink
+    # once the answer has finished streaming. Lets the audit persist the REAL
+    # status (the verdict necessarily arrives after the tokens, by design).
+    guardrail_verdict: dict = {}
+
     async def event_generator() -> AsyncIterator[dict]:
         """Stream the clean answer live while hiding internal JSON structure.
 
@@ -634,6 +976,13 @@ async def chat_stream(
         extractor = StreamingAnswerExtractor()
         full_text: list[str] = []
 
+        # D2 (Phase 2): when enforcement is ON nothing generated may reach the
+        # client before the verdict is known -- otherwise a FAIL could only be
+        # corrected *after* a hallucinated answer had already been streamed.
+        # With enforcement OFF (default) tokens stream live exactly as before.
+        withhold_until_verdict = bool(GUARDRAIL_ENFORCE)
+        buffered_tokens: list[str] = []
+
         # --- Phase 1: Stream tokens through live as they are generated --------
         try:
             async for token in pipe.query_stream(
@@ -642,6 +991,8 @@ async def chat_stream(
                 fiscal_year=payload.fiscal_year,
                 session_id=payload.session_id,
                 tickers=payload.tickers,
+                context_sink=request_contexts,
+                guardrail_sink=guardrail_verdict,
             ):
                 if token:
                     full_text.append(token)
@@ -649,7 +1000,10 @@ async def chat_stream(
                 if frag:
                     clean = _strip_internal_markers(frag)
                     if clean:
-                        yield {"event": "token", "data": clean}
+                        if withhold_until_verdict:
+                            buffered_tokens.append(clean)
+                        else:
+                            yield {"event": "token", "data": clean}
         except asyncio.CancelledError:
             # Client disconnected mid-stream; persist what we have and stop.
             if full_text:
@@ -667,11 +1021,13 @@ async def chat_stream(
         if tail:
             clean_tail = _strip_internal_markers(tail)
             if clean_tail:
-                yield {"event": "token", "data": clean_tail}
+                if withhold_until_verdict:
+                    buffered_tokens.append(clean_tail)
+                else:
+                    yield {"event": "token", "data": clean_tail}
 
         collected_text = extractor.raw_text or "".join(full_text)
         collected.append(collected_text)
-        _persist_session_memory(pipe, payload.session_id)
 
         # --- Phase 2: Parse JSON and extract clean answer + sources -----------
         answer_text = collected_text  # fallback: emit raw text
@@ -689,69 +1045,52 @@ async def chat_stream(
         answer_text = _strip_internal_markers(answer_text)
 
         # --- Phase 2b: Build structured SourceChunk objects --------------------
-        # The LLM emits citation strings (e.g. "AAPL - 2024 - Revenue - 10").
-        # We enrich these with metadata from the actual retrieved chunks stored
-        # in the pipeline's _last_contexts so the frontend source inspector
-        # drawer can display chunk text, scores, and file details.
-        structured_sources: list[dict] = []
-        last_ctx = getattr(pipe, "_last_contexts", []) or []
+        # The LLM emits citation strings (e.g. "NVIDIA - Data Center - 2026").
+        # We enrich this response from the EXACT chunks retrieved/grounded for
+        # THIS request (captured via context_sink) so the frontend source
+        # inspector drawer shows the real chunks behind the answer. Chunks are
+        # ordered LLM-cited first, then by retrieval score; unrelated chunks
+        # from prior queries or other requests can never appear because the
+        # source set is bounded by request_contexts.
+        structured_sources: list[dict] = _build_stream_sources(
+            raw_source_strings, request_contexts
+        )
 
-        # Deduplicate LLM source strings
-        seen_strs: set[str] = set()
-        unique_strings = [s for s in raw_source_strings if s and s not in seen_strs and not seen_strs.add(s)]  # type: ignore[func-returns-value]
+        # --- Phase 2c: Opt-in guardrail enforcement (D2) ----------------------
+        # Same policy as the sync endpoint (shared predicates): under enforcement
+        # ONLY a definite PASS releases the generated answer. A definite FAIL
+        # swaps in the safe fallback; an evaluator ERROR/timeout withholds the
+        # unverified answer behind a distinct notice (the SSE contract has no
+        # status channel, so releasing it would look like a verified answer).
+        # `not_run` (guardrail disabled / non-financial route) is delivered.
+        guardrail_status = guardrail_verdict.get("status")
+        guardrail_swapped = _guardrail_should_swap(
+            guardrail_status, guardrail_verdict.get("final_output")
+        )
+        guardrail_withheld = _guardrail_should_withhold(guardrail_status)
+        guardrail_enforced = guardrail_swapped or guardrail_withheld
+        guardrail_verdict["enforced"] = guardrail_enforced
+        if guardrail_swapped:
+            answer_text = guardrail_verdict["final_output"]
+            structured_sources = []
+        elif guardrail_withheld:
+            answer_text = GUARDRAIL_UNAVAILABLE_MESSAGE
+            structured_sources = []
+        elif withhold_until_verdict:
+            # PASS / not_run: release the buffered generated answer now.
+            for chunk in buffered_tokens:
+                yield {"event": "token", "data": chunk}
 
-        # Map LLM citation strings to retrieved chunks for enrichment
-        for citation in unique_strings:
-            src_obj: dict = {"text": citation, "chunk_id": "", "score": 0.0}
-            # Try to match citation to a retrieved chunk by ticker/year/section
-            citation_lower = citation.lower()
-            best_match: dict | None = None
-            for ctx in last_ctx:
-                payload_ = ctx.get("payload", {})
-                tk = str(payload_.get("ticker", "")).lower()
-                fy = str(payload_.get("fiscal_year", "")).lower()
-                sec = str(payload_.get("section", "")).lower()
-                if tk and tk in citation_lower:
-                    best_match = ctx
-                    break
-            if best_match:
-                payload_ = best_match.get("payload", {})
-                # Prefer the real chunk content over the bare citation string,
-                # probing every payload naming variant used by the backend.
-                chunk_content = next(
-                    (
-                        str(payload_.get(key, "")).strip()
-                        for key in ("raw_text", "page_content", "chunk_text", "text", "snippet")
-                        if str(payload_.get(key, "")).strip()
-                    ),
-                    "",
-                )
-                src_obj["text"] = _strip_internal_markers(
-                    chunk_content[:800] if chunk_content else citation
-                )
-                src_obj["chunk_id"] = str(best_match.get("chunk_id", ""))
-                src_obj["score"] = float(best_match.get("score", 0.0))
-                src_obj["ticker"] = _clean_meta_str(payload_.get("ticker"))
-                src_obj["fiscal_year"] = _clean_meta_str(payload_.get("fiscal_year"))
-                src_obj["section"] = _clean_meta_str(payload_.get("section"))
-                src_obj["source_file"] = _clean_meta_str(payload_.get("source_file"))
-                src_obj["page_number"] = payload_.get("page_number")
-            structured_sources.append(src_obj)
+        # Memory is written AFTER enforcement so an enforced/withheld answer does
+        # not leave the unverified generated answer in conversation memory.
+        if guardrail_enforced:
+            _sanitize_session_memory(pipe, answer_text)
+        _persist_session_memory(pipe, payload.session_id)
 
-        # Fallback: if no LLM sources but we have retrieved chunks, surface them
-        if not structured_sources and last_ctx:
-            for ctx in last_ctx[:5]:
-                payload_ = ctx.get("payload", {})
-                structured_sources.append({
-                    "chunk_id": str(ctx.get("chunk_id", "")),
-                    "score": float(ctx.get("score", 0.0)),
-                    "ticker": _clean_meta_str(payload_.get("ticker")),
-                    "fiscal_year": _clean_meta_str(payload_.get("fiscal_year")),
-                    "section": _clean_meta_str(payload_.get("section")),
-                    "source_file": _clean_meta_str(payload_.get("source_file")),
-                    "page_number": payload_.get("page_number"),
-                    "text": _strip_internal_markers(str(payload_.get("raw_text", ""))[:300]),
-                })
+        # Audit must persist the DELIVERED answer (parsed answer, or the
+        # enforced fallback) -- matching the sync path -- instead of the raw
+        # LLM JSON document.
+        collected[:] = [answer_text]
 
         # --- Phase 3: Fallback re-stream for non-JSON output -------------------
         # If we never decoded an answer field (the LLM produced plain text), emit
@@ -774,11 +1113,12 @@ async def chat_stream(
     async def _log_stream_audit() -> None:
         """Build + persist an audit trace once streaming finishes.
 
-        ``retrieved_chunks`` is filled from the pipeline's post-retrieval
-        context store (populated by ``query_stream``) so the analytics
-        context-quality buckets reflect streaming traffic. Injected
-        augmentation tables carry score 0.0 and are excluded so only real
-        retrieval relevance scores are bucketed.
+        ``retrieved_chunks`` is filled from the per-request grounding context
+        captured for this exact query (not the shared pipeline slot, which a
+        subsequent request may rewrite) so the analytics context-quality
+        buckets reflect streaming traffic. Injected augmentation tables carry
+        score 0.0 and are excluded so only real retrieval relevance scores are
+        bucketed.
         """
         scored_chunks = [
             {
@@ -788,7 +1128,7 @@ async def chat_stream(
                 "fiscal_year": (ctx.get("payload") or {}).get("fiscal_year"),
                 "section": (ctx.get("payload") or {}).get("section"),
             }
-            for ctx in getattr(pipe, "_last_contexts", []) or []
+            for ctx in request_contexts
             if float(ctx.get("score") or 0.0) > 0
         ]
         audit_event = AuditLogEvent(
@@ -801,7 +1141,15 @@ async def chat_stream(
                 "prompt_payload": "n/a (streaming)",
             },
             generated_response={"answer": "".join(collected), "sources": []},
-            execution_metadata={"mode": "stream", "model_used": "unknown"},
+            execution_metadata={
+                "mode": "stream",
+                "model_used": "unknown",
+                # D1: real streaming verdict; "not_run" when the guardrail did
+                # not execute. Never fabricate a PASS.
+                "guardrail_status": guardrail_verdict.get("status", "not_run"),
+                "guardrail_passed": bool(guardrail_verdict.get("passed", False)),
+                "guardrail_enforced": bool(guardrail_verdict.get("enforced", False)),
+            },
         )
         _schedule_audit_log(background_tasks, audit_event)
 
@@ -818,17 +1166,23 @@ async def upload_document(
     request: Request,
     response: Response,
     file: UploadFile = File(...),
-    _user: str | None = Depends(get_current_user),
+    admin: UserPrincipal = Depends(require_roles(["admin"])),
+    source_id: str | None = None,
+    doc_type: str | None = None,
 ):
     """Upload an SEC filing document and trigger the ingestion pipeline.
 
-    Rate-limited (10 req/min per user/IP). An audit event recording the upload
-    is persisted in the background.
+    Admin-only: server-side RBAC (``require_roles(["admin"])``) rejects
+    anonymous callers (401) and authenticated non-admin users (403) before any
+    file persistence, task creation, embedding, or indexing. Rate-limited
+    (10 req/min per user/IP). An audit event recording the upload is persisted
+    in the background.
     """
     ticker = request.query_params.get("ticker", "UNKNOWN")
     fiscal_year = request.query_params.get("fiscal_year", "UNKNOWN")
     user_identifier = (
         getattr(request.state, "user", None)
+        or admin.user_id
         or (request.client.host if request.client else "guest")
     )
 
@@ -844,10 +1198,12 @@ async def upload_document(
 
     raw_bytes = await file.read()
 
-    # Save to data dir
-    save_dir = DATA_DIR / ticker / "10-K" / fiscal_year
-    save_dir.mkdir(parents=True, exist_ok=True)
-    save_path = save_dir / file.filename
+    # Resolve stable logical-filing identity (explicit param, else accession
+    # from the filing header) and persist without silent overwrites.
+    resolved_source_id = _resolve_upload_identity(raw_bytes, source_id)
+    save_path = _resolve_upload_save_path(
+        ticker, fiscal_year, file.filename, resolved_source_id, doc_type
+    )
     save_path.write_bytes(raw_bytes)
 
     # Run ingestion in background (FastAPI BackgroundTasks by default; arq
@@ -864,7 +1220,9 @@ async def upload_document(
     if USE_ARQ_QUEUE:
         from app.api.worker import enqueue_ingestion
 
-        await enqueue_ingestion(save_path, ticker, fiscal_year, task_id)
+        await enqueue_ingestion(
+            save_path, ticker, fiscal_year, task_id, resolved_source_id, doc_type
+        )
     else:
         background_tasks.add_task(
             _ingest_document,
@@ -872,6 +1230,8 @@ async def upload_document(
             ticker,
             fiscal_year,
             task_id,
+            resolved_source_id,
+            doc_type,
         )
 
     # --- Audit log the upload (fire-and-forget) ---
@@ -909,7 +1269,14 @@ async def upload_document(
     )
 
 
-def _ingest_document(file_path: Path, ticker: str, fiscal_year: str, task_id: str):
+def _ingest_document(
+    file_path: Path,
+    ticker: str,
+    fiscal_year: str,
+    task_id: str,
+    source_id: str | None = None,
+    doc_type: str | None = None,
+):
     """Run the full ingestion pipeline on an uploaded document (background)."""
     from cleaning import clean_financial_text
     from metadata_extractor import extract_metadata
@@ -932,7 +1299,10 @@ def _ingest_document(file_path: Path, ticker: str, fiscal_year: str, task_id: st
             content=parsed["raw_html"],
             chunk_text=cleaned[:2000],
             chunk_index=0,
+            source_id=source_id,
         )
+        if doc_type:
+            base_metadata["doc_type"] = doc_type
         year_match = re.search(r"(\d{4})", fiscal_year)
         if year_match:
             base_metadata["fiscal_year"] = year_match.group(1)
@@ -961,8 +1331,22 @@ def _ingest_document(file_path: Path, ticker: str, fiscal_year: str, task_id: st
         else:
             qdrant = QdrantIndexer()
             owns_qdrant = True
-        qdrant_count = qdrant.upsert_vectors(chunks, all_embeddings)
-        mongo_count = mongo.upsert_chunks(chunks)
+
+        resolved_sid = source_id or base_metadata.get("source_id")
+        if resolved_sid:
+            # D6-B: identity is known — replace this filing's chunks safely
+            # (verify writes in both stores, then delete stale within scope).
+            from safe_replacement import replace_source
+
+            for chunk in chunks:
+                chunk.setdefault("metadata", {})["source_id"] = resolved_sid
+            summary = replace_source(resolved_sid, chunks, all_embeddings, mongo, qdrant)
+            mongo_count = summary["mongo_present"]
+            qdrant_count = summary["qdrant_present"]
+        else:
+            # Identity unresolved — upsert only, never delete.
+            qdrant_count = qdrant.upsert_vectors(chunks, all_embeddings)
+            mongo_count = mongo.upsert_chunks(chunks)
 
         if owns_qdrant:
             qdrant.close()
@@ -1026,27 +1410,57 @@ async def flush_cache(
 
 @app.get("/health", response_model=HealthCheckResponse)
 async def health(request: Request):
-    """Health check endpoint — probes MongoDB, Qdrant, and Redis."""
+    """Health check endpoint — probes MongoDB, Qdrant, and Redis.
+
+    Also reports MongoDB↔Qdrant count parity (D6). The parity check is
+    *informational only*: a drift is surfaced as a warning and never flips the
+    liveness status, so a known corpus drift cannot make the service look down.
+    """
     services = HealthServiceStatus()
 
-    # MongoDB check
+    mongo_chunks: int | None = None
+    qdrant_points: int | None = None
+
+    # MongoDB check (+ raw_chunks count for parity)
     try:
         import pymongo
-        from config.settings import MONGODB_URI
+        from config.settings import MONGODB_URI, MONGODB_DB
         client = pymongo.MongoClient(MONGODB_URI, serverSelectionTimeoutMS=2000)
         client.admin.command("ping")
+        try:
+            mongo_chunks = client[MONGODB_DB]["raw_chunks"].count_documents({})
+        except Exception as exc:
+            logger.warning("Health: mongo raw_chunks count failed: %s", exc)
         client.close()
         services.mongodb = "ok"
     except Exception as exc:
         services.mongodb = f"unavailable ({exc})"
 
-    # Qdrant check
+    # Qdrant check (+ point count for parity)
     try:
         pipe = _get_pipeline(request)
-        pipe._qdrant_indexer.count_points()
+        qdrant_points = pipe._qdrant_indexer.count_points()
         services.qdrant = "ok"
     except Exception as exc:
         services.qdrant = f"unavailable ({exc})"
+
+    # D6: MongoDB↔Qdrant count parity (informational; never affects liveness).
+    if isinstance(mongo_chunks, int) and isinstance(qdrant_points, int):
+        delta = mongo_chunks - qdrant_points
+        if delta == 0:
+            services.mongo_qdrant_parity = f"ok ({mongo_chunks})"
+        else:
+            services.mongo_qdrant_parity = (
+                f"drift (mongo={mongo_chunks}, qdrant={qdrant_points}, delta={delta})"
+            )
+            logger.warning(
+                "Health: MongoDB(%d) / Qdrant(%d) count drift (delta=%d)",
+                mongo_chunks,
+                qdrant_points,
+                delta,
+            )
+    else:
+        services.mongo_qdrant_parity = "unknown"
 
     # Redis check
     try:
@@ -1164,6 +1578,8 @@ async def admin_ingest(
     response: Response,
     file: UploadFile = File(...),
     _admin: UserPrincipal = Depends(require_roles(["admin"])),
+    source_id: str | None = None,
+    doc_type: str | None = None,
 ):
     """Admin-only document ingestion (RBAC-gated alias of /documents/upload).
 
@@ -1183,9 +1599,10 @@ async def admin_ingest(
         )
 
     raw_bytes = await file.read()
-    save_dir = DATA_DIR / ticker / "10-K" / fiscal_year
-    save_dir.mkdir(parents=True, exist_ok=True)
-    save_path = save_dir / file.filename
+    resolved_source_id = _resolve_upload_identity(raw_bytes, source_id)
+    save_path = _resolve_upload_save_path(
+        ticker, fiscal_year, file.filename, resolved_source_id, doc_type
+    )
     save_path.write_bytes(raw_bytes)
 
     task_id = str(uuid.uuid4())[:8]
@@ -1193,9 +1610,19 @@ async def admin_ingest(
     if USE_ARQ_QUEUE:
         from app.api.worker import enqueue_ingestion
 
-        await enqueue_ingestion(save_path, ticker, fiscal_year, task_id)
+        await enqueue_ingestion(
+            save_path, ticker, fiscal_year, task_id, resolved_source_id, doc_type
+        )
     else:
-        background_tasks.add_task(_ingest_document, save_path, ticker, fiscal_year, task_id)
+        background_tasks.add_task(
+            _ingest_document,
+            save_path,
+            ticker,
+            fiscal_year,
+            task_id,
+            resolved_source_id,
+            doc_type,
+        )
 
     logger.info(
         "Admin ingest: admin=%s file=%s ticker=%s year=%s task=%s",

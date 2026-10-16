@@ -24,7 +24,8 @@ services:
   mongo:
     image: mongo:7
     restart: unless-stopped
-    volumes: [mongodb_data:/data/db]
+    volumes:
+      - mongo_data:/data/db
     networks: [backend-net]
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
@@ -74,19 +75,17 @@ services:
   # (client version pinned in requirements.txt: mlflow==3.15.1)
   # ------------------------------------------------------------------------
   mlflow:
-    image: ghcr.io/mlflow/mlflow:latest   # pin to mlflow==3.15.1 for parity
+    image: ghcr.io/mlflow/mlflow:v3.15.1   # pinned to requirements.txt mlflow==3.15.1
     restart: unless-stopped
     command: >
       mlflow server
       --host 0.0.0.0
       --port 5000
-      --backend-store-uri file:/mlflow
-      --default-artifact-root file:/mlflow/artifacts
-    environment:
-      # mlflow v3.x moved the filesystem backend to maintenance mode; re-enable
-      # it for the simple single-node file store mounted at /mlflow. Remove if
-      # you migrate to a SQL/DB tracking backend.
-      MLFLOW_ALLOW_FILE_STORE: "true"
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+      --artifacts-destination /mlflow/artifacts
+      --serve-artifacts
+      --allowed-hosts mlflow,mlflow:5000,backend,backend:8000,localhost,localhost:*,127.0.0.1,127.0.0.1:*
     volumes:
       - mlflow_store:/mlflow
       - mlflow_artifacts:/mlflow/artifacts
@@ -138,6 +137,7 @@ services:
       - nltk_data:/opt/nltk_data     # NLTK punkt tokenizer data
       - rag_data:/app/data           # raw corpus (seed via docker compose cp)
       - rag_logs:/app/logs
+      - ./artifacts:/app/artifacts:ro   # latest evaluation scores for analytics
     networks: [backend-net, frontend-net]
     depends_on:
       mongo: { condition: service_healthy }
@@ -253,7 +253,8 @@ networks:
   frontend-net:     # frontend/streamlit <-> backend
 
 volumes:
-  mongodb_data:
+  mongodb_data:       # legacy native bind replacement — declared but UNUSED (do not delete)
+  mongo_data:         # active MongoDB datastore (named volume; replaces ./mongodb_data bind)
   redis_data:
   qdrant_storage:
   mlflow_store:

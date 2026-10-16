@@ -1,7 +1,13 @@
 # PROJECT_MAP.md — Financial RAG System
 
 > **Document status: REBUILT 2026-09-06**; **updated 2026-09-07** for the Docker Compose
-> deployment (verified 6-service stack — §1/§16/§17/§23/§30).
+> deployment (verified 6-service stack — §1/§16/§17/§23/§30); **updated 2026-09-18** for the
+> post-restoration state: MongoDB bind-mounts the native dbPath and Qdrant's 1152 vectors were
+> restored via a point-level transplant (verified deployment state — §1/§16/§23).
+> **Updated 2026-10-12 — documentation accuracy refresh:** counts refreshed from live checks
+> (Mongo `raw_chunks` 1164, `users` 33), upload is now admin-gated (Fix C), the artifacts
+> bind-mount + evaluation-display pipeline are documented (§17/§20/§23), auth `EmailStr`
+> validation gotcha recorded (§26.17), and a table of contents was added below.
 > The codebase is the source of truth; this map was re-synchronized against the
 > working tree (not git HEAD — see §26). Every statement below is verified against
 > the current source unless explicitly marked **NOT VERIFIED** or **HISTORICAL**.
@@ -15,6 +21,44 @@
 
 ---
 
+## Table of Contents
+
+| Section | Topic |
+|---|---|
+| §1 | Executive Overview & runtime facts |
+| §2 | Project goals |
+| §3 | System capabilities (implemented / experimental / planned) |
+| §4 | Repository structure |
+| §5 | Architecture overview & request lifecycle |
+| §6 | Data ingestion pipeline |
+| §7 | Retrieval architecture |
+| §8 | Reranking architecture |
+| §9 | Context construction (`_augment_context`) |
+| §10 | Generation engine |
+| §11 | Memory / conversational context |
+| §12 | Guardrails / grounding |
+| §13 | Fiscal-year / temporal query handling |
+| §14 | API architecture (endpoint matrix) |
+| §15 | Frontend architecture |
+| §16 | Database architecture (Mongo / Qdrant / Redis) |
+| §17 | Configuration architecture |
+| §18 | Authentication / security |
+| §19 | Logging / observability |
+| §20 | MLflow / model management & evaluation display |
+| §21 | Testing / validation |
+| §22 | Scripts / diagnostics / artifacts |
+| §23 | Deployment / runtime |
+| §24 | Error handling / fallbacks |
+| §25 | Current production status |
+| §26 | Known limitations (verified) |
+| §27 | Experimental features |
+| §28 | Recent important changes (working tree) |
+| §29 | Important design decisions |
+| §30 | Mermaid diagrams |
+| Appendix | Discrepancies vs the previous map |
+
+---
+
 ## 1. Executive Overview
 
 **Financial RAG** is an enterprise-style Retrieval-Augmented Generation system that
@@ -25,18 +69,18 @@ table-aware context construction, a Groq LLM generator, and an async hallucinati
 guardrail. It exposes a FastAPI backend (auth, RBAC, rate limiting, SSE streaming,
 audit logging) consumed by a Next.js 15 dashboard and a legacy Streamlit client.
 
-Current runtime facts (verified 2026-09-07 at inspection):
+Current runtime facts (verified 2026-09-17 post-restoration; counts refreshed 2026-10-12):
 
 | Layer | Actual technology |
 |---|---|
 | Embedding model | `nomic-ai/nomic-embed-text-v1.5` (768-dim, CUDA) |
 | Reranker | `BAAI/bge-reranker-large` cross-encoder, **dtype default `float16`** (CPU → float32 fallback) |
-| Vector store | Qdrant **server container** (compose service `qdrant` at `qdrant:6333`, volume `qdrant_storage`), collection `financial_vectors`, 768-dim Cosine |
-| Document store | MongoDB **7 container** (compose service `mongo`; `financial_rag.raw_chunks`, plus `users`, `rag_audit_logs`) |
+| Vector store | Qdrant **server container** (compose service `qdrant` at `qdrant:6333`, volume `qdrant_storage`), collection `financial_vectors` — **1152 vectors (768-dim Cosine), restored 2026-09-17 via point-level transplant** |
+| Document store | MongoDB **7 container** (compose service `mongo`; bind mount `./mongodb_data`, daemon UID 1000; `financial_rag.raw_chunks` = 1164, plus `users` = 33 (2 admins), `rag_audit_logs`) |
 | Cache / queue / rate-limit / auth-blacklist | Redis **7 container** (compose service `redis`, `redis://redis:6379/0`) |
 | LLM generation | Groq `openai/gpt-oss-120b` (primary), `openai/gpt-oss-20b` (fallback), temp 0.0, seed 42 |
 | Judge LLM (eval only) | Groq `qwen/qwen3.6-27b` (primary), `openai/gpt-oss-120b` (fallback) |
-| Backend | FastAPI + Uvicorn **container** (service `backend`, published `8000:8000`), CUDA/GPU runtime, optional Arq worker on Redis |
+| Backend | FastAPI + Uvicorn **container** (service `backend`, published `8000:8000`), CUDA/GPU runtime. Background task queue layer: **`arq` worker (Redis-backed)** for high-concurrency ingestion / heavy background jobs (opt-in via `USE_ARQ_QUEUE`, §5.1) |
 | Dashboards | Next.js 15.5.23 (React 19) **container** (service `frontend`, published `3000:3000`) primary; Streamlit legacy (`app/ui/streamlit_app.py`, profile-only) |
 | MLflow | **server container** (service `mlflow`, `mlflow:5000`, file store `/mlflow`, volumes `mlflow_store` + `mlflow_artifacts`) |
 | Runtime | **Docker Compose project `financial-rag` — 6 active services** (backend, frontend, mongo, redis, qdrant, mlflow) on WSL2 + Docker Desktop; backend container runs Python 3.12-slim + `torch 2.13.0+cu130` with **CUDA on NVIDIA GeForce RTX 4050 Laptop GPU** |
@@ -121,7 +165,7 @@ Financial_RAG/                          (canonical runtime: WSL2 native ext4)
 ├── config/                             settings.py (env config) · logging_config.py (JSON logger)
 ├── evaluation/                         synthetic_generator.py · batch_runner.py ·
 │                                       judge_evaluator.py · mlflow_tracker.py
-├── test/                               29 test files, ~495 test functions (see §21)
+├── test/                               31 test files, 517 test functions (see §21)
 ├── scripts/                            ops / benchmark / diagnostic one-off scripts (see §22)
 │   └── probes/                         stage runners + probes + _reingest_production.py
 ├── frontend/                           Next.js 15.5.23 app (see §15)
@@ -131,6 +175,8 @@ Financial_RAG/                          (canonical runtime: WSL2 native ext4)
 │   │                                   NNDA/ (typo dir), UNKNOWN/ (bad uploads), qdrant_db(+_test)
 ├── mongodb_data/                       Persistent MongoDB data (WiredTiger)
 ├── backups/qdrant_db_backup_pre_reingest/  Pre-re-ingest Qdrant snapshot (2 files)
+├── backups/20260917_002054/                Post-restoration backup — mongodb_data + qdrant_db
+│                                           (byte-identical to the pre-change native state)
 ├── artifacts/                          test_dataset.csv · evaluation_results.csv ·
 │   │                                   evaluation_scores.json (+_progress) · EVALUATION_SUMMARY.md ·
 │   │                                   ab_benchmark/ · ab2_benchmark/ (FP16 & config A/B)
@@ -198,6 +244,31 @@ pass-through → cylinder reorder) → `_resolve_table_placeholders` → `_augme
 
 > Detail: the pipeline **does not read `session_id`** — memory persistence is entirely
 > an API-layer swap of the shared generator's `ConversationMemory` (§11).
+
+### 5.1 Background task queue — `arq` worker (Redis-backed)
+
+Standard API requests are served **synchronously** on the FastAPI process. A
+Redis-backed **`arq` worker** (`app/api/worker.py`, `WorkerSettings`) provides a
+background task queue that is integrated for **high-concurrency ingestion, heavy
+background processing, and scheduled tasks** under high-traffic load, so the
+primary API stays responsive and non-blocking.
+
+- **Queue backend / broker:** Redis (`REDIS_URL`), via `arq` (`arq==0.28.0`).
+- **Enablement (accurate as of this map):** gated by `USE_ARQ_QUEUE`
+  (`config/settings.py`, default **`false`**). When `false`, ingestion and audit
+  persistence run on FastAPI `BackgroundTasks` in-process; when `true`, they are
+  enqueued to the worker pool. The `arq-worker` compose service that runs
+  `arq app.api.worker.WorkerSettings` is **present but commented out** in
+  `docker-compose.yml` (`USE_ARQ_QUEUE: "false"` on the backend) — i.e. the
+  worker layer is **implemented and integrated, opt-in for high-traffic load**,
+  not the default local runtime.
+- **Jobs:** `ingest_document` (full upload/ingest pipeline, blocking work
+  offloaded to `asyncio.to_thread`) and `persist_audit_log` (RAG audit events
+  written off the request path), plus enqueue helpers `enqueue_ingestion` /
+  `enqueue_audit_log`.
+- **Limits:** `ARQ_MAX_JOBS` (default 4), `ARQ_JOB_TIMEOUT_SECONDS` (default 900).
+- **Known limitation:** `_INGESTION_TASKS` task-state is in-memory, so with
+  `USE_ARQ_QUEUE=true` the API process does not see worker-side task state (§26).
 
 ---
 
@@ -469,7 +540,7 @@ All endpoints verified in `app/api/main.py` + `app/api/auth/router.py`;
 | POST | `/api/v1/auth/change-password` | authenticated | none | verify + bcrypt update |
 | POST | `/api/v1/chat` | optional auth | 10/min | sync RAG → `ChatQueryResponse` (guardrail_status hard-coded `passed=True`; real guardrail in audit only) |
 | POST | `/api/v1/chat/stream` | optional auth | 10/min | SSE: `token`(words) → `answer` → `sources` → `done`; `error` non-terminal |
-| POST | `/api/v1/documents/upload` | optional auth | 10/min | multipart + query `ticker`/`fiscal_year` → BackgroundTasks or Arq `_ingest_document`; `task_id` |
+| POST | `/api/v1/documents/upload` | **admin** | 10/min | multipart + query `ticker`/`fiscal_year` → BackgroundTasks or Arq `_ingest_document`; `task_id`. **RBAC-gated `require_roles(["admin"])` (FIXED 2026-10-12): 401 anon / 403 user / 200 admin** |
 | GET | `/api/v1/documents/tasks/{task_id}` | optional auth | none | poll in-memory `_INGESTION_TASKS` (404 unknown) |
 | POST | `/api/v1/ingest` | **admin** | 10/min | admin alias of upload (no audit event) |
 | DELETE | `/api/v1/db/clear` | **admin** | 5/min | drop Mongo + Qdrant collections |
@@ -538,8 +609,10 @@ path alias `@/*`.
 
 ## 16. Database Architecture
 
-**MongoDB** (compose `mongo` service → `mongodb://mongo:27017/financial_rag`, volume
-`mongodb_data`; native default was `mongodb://localhost:27017`; unique index on `chunk_id`):
+**MongoDB** (compose `mongo` service → `mongodb://mongo:27017/financial_rag`, **host bind mount
+`./mongodb_data`** with `user: "1000:1000"` — the pre-existing native WiredTiger dbPath; the
+legacy `mongodb_data` named volume is declared but no longer mounted; native default was
+`mongodb://localhost:27017`; unique index on `chunk_id`):
 | Collection | Purpose / shape |
 |---|---|
 | `raw_chunks` | `{_id, chunk_id, chunk_type, contains_table, doc_type, fiscal_year, page_number(None), raw_text, section, source_file, ticker, token_count}`; each chunk's full text + metadata |
@@ -548,15 +621,22 @@ path alias `@/*`.
 | system collections | `financial_rag.<system>` etc. (implied, WiredTiger) |
 
 **Qdrant** (compose `qdrant` service, server mode reached via empty `QDRANT_PATH`; volume
-`qdrant_storage`; `financial_vectors`, 768-dim, Cosine, HNSW. Native historical mode: embedded
-`data/qdrant_db`, file-locked):
+`qdrant_storage`; `financial_vectors`, 768-dim, Cosine, HNSW. **Restored 2026-09-17:** the
+collection was rebuilt by a **point-level vector transplant** — the 1152 native vectors were
+read (scroll, exact ids/vectors/payloads) from the pristine embedded store with
+`qdrant-client==1.18.0` and upserted into the container server over REST (no re-embedding, no
+re-chunking, no re-ingestion). The server store is therefore **not** a byte-identical reuse of
+the native store files (the server on-disk format differs from the embedded store); it is a
+fresh server-format store containing identical points. The native embedded store
+(`data/qdrant_db`, file-locked) is retained **pristine as the canonical/historical archive**
+(backup: `backups/20260917_002054/`):
 | Field | Value |
 |---|---|
 | collection | `financial_vectors` |
 | vectors | size 768, distance Cosine (per `meta.json`) |
 | point id | `uuid5(NAMESPACE_DNS, chunk_id)` |
 | payload | `{chunk_id, ticker, fiscal_year, section, doc_type, contains_table}` (no raw text) |
-| geometry | verified live 2026-09-05: 1147 points (incl. the `UNKNOWN` NVDA supplement at point `2f3e64ef-e979-52e8-8352-b09389293977`, 768-dim) |
+| geometry | verified 2026-09-17 (post-restoration, exact count): **1152 points**, status green (incl. the `UNKNOWN` NVDA supplement) |
 
 **Redis** (compose `redis` service → `redis://redis:6379/0`, volume `redis_data`; native default
 was `redis://localhost:6379/0`): semantic cache keys `sem_cache:{TICKER}:{YEAR}:
@@ -564,8 +644,8 @@ was `redis://localhost:6379/0`): semantic cache keys `sem_cache:{TICKER}:{YEAR}:
 slowapi storage; Arq queue when enabled. **At inspection DB was empty (DBSIZE=0).**
 
 **Historical corpus** (chunk counts): NVDA = 183 (2025) + 180 (2026) + 1 (UNKNOWN
-supplement) = 364 Qdrant points; Mongo/Qdrant counts align at ~1147 points total (see
-`scripts/_fy26_nvda_inv.out`, `_fy26_qdrant.out`). A re-ingest of the supplement with
+supplement) = 364 Qdrant points. Current verified totals (2026-10-12): Mongo `raw_chunks` =
+1164; Qdrant `financial_vectors` = 1152 points. A re-ingest of the supplement with
 correct metadata (`NVDA:2026`) would produce a *different* id (`NVDA_txt_4d3d41429f6a_0000`),
 not an overwrite — the UNKNOWN copy must be explicitly removed.
 
@@ -595,6 +675,7 @@ Key effective values (defaults used unless overridden):
 | `QDRANT_PATH` | native default `data/qdrant_db`; **`""` in compose** → remote `qdrant` service | `.env` QDRANT_URL **ignored** |
 | `REDIS_URL` | `redis://{REDIS_HOST}:{REDIS_PORT}/0` from `.env`; **compose sets `redis://redis:6379/0`** | **FIXED** — explicit `REDIS_URL` wins, else built from `REDIS_HOST`/`REDIS_PORT` |
 | `MLFLOW_MODEL_LOADING` | `true` | Provenance-only load (§20) |
+| `EVALUATION_SCORES_PATH` | `artifacts/evaluation_scores.json` | read (cached per-process) by `app/api/analytics.py::_read_evaluation_scores`; the file is mounted **read-only** into the backend via `./artifacts:/app/artifacts:ro` (§23) |
 | `MLFLOW_EVAL_REGISTRY_URI` | native `sqlite:////home/youssef/Financial_RAG/mlflow.db`; **compose sets `http://mlflow:5000`** | `.env` MLFLOW_TRACKING_URI **ignored** |
 | `ENABLE_HYBRID_RETRIEVAL` / `ENABLE_POST_RETRIEVAL` | `true` / `true` | pipeline defaults construct with these through `model_loader` |
 | `ENABLE_PRE_RETRIEVAL` | **`false`** | feature disabled in production |
@@ -604,6 +685,11 @@ Key effective values (defaults used unless overridden):
 | chunk tokens / overlap | 768–1024 / 0.2 | |
 | cache thresholds | 0.96 / 0.60 / 0.75 | Tier A / fast-miss / Tier B |
 | retrieval & rerank | hyb 40 / RRF 60 / rerank 8 | §7/§8 |
+
+> **Auth schema email validation (KNOWN LIMITATION — §26.17):** `LoginRequest`/`SignupRequest`
+> use pydantic `EmailStr`, which — via `email-validator` — rejects reserved/special-use-TLD
+> addresses such as `admin@financial-rag.local` with HTTP 422 *at schema stage* (before any
+> password check). Use a standard email domain for `SUPERADMIN_EMAIL`.
 
 ---
 
@@ -616,14 +702,15 @@ Key effective values (defaults used unless overridden):
 - **Refresh**: HttpOnly cookie `refresh_token` (Secure when `ENV=production`, SameSite=lax,
   path scoped to `/api/v1/auth/refresh`).
 - **Logout**: jti blacklist in Redis with TTL = remaining token life.
-- **RBAC**: `require_roles(["admin"])` on `/admin/*`, `/ingest`, `/db/clear`, and
-  `DELETE /api/v1/cache` (FIXED 2026-09-06; verified 401 anonymous / 403 user / 200 admin).
+- **RBAC**: `require_roles(["admin"])` on `/admin/*`, `/ingest`, `/db/clear`,
+  `DELETE /api/v1/cache` (FIXED 2026-09-06; verified 401 anonymous / 403 user / 200 admin),
+  and `POST /api/v1/documents/upload` (FIXED 2026-10-12; same verified matrix).
 - **Rate limiting**: slowapi dynamic key — authenticated `user:<id>`, guests `ip:<host>`;
   X-RateLimit headers on 429.
 - **Findings (KNOWN):**
   1. Auth endpoints (signup/login/refresh) are not rate-limited.
-  2. `/chat`, `/chat/stream`, `/documents/upload`, `/analytics`, `/audit/logs` accept guest
-     (optional identity) — by design for Streamlit.
+  2. `/chat`, `/chat/stream`, `/analytics`, `/audit/logs` accept guest (optional
+     identity) — by design for Streamlit. `/documents/upload` is **admin-only** (Fix C).
   3. Frontend `ragStream.ts` sends **no Authorization header** on `/chat/stream` (raw fetch).
   4. `x-role` cookie is client-set, non-HttpOnly — an edge convenience only.
   5. Streamlit (`app/ui/streamlit_app.py`) sends no credentials at all.
@@ -651,21 +738,34 @@ Key effective values (defaults used unless overridden):
 
 ---
 
-## 20. MLflow / Model Management
+## 20. MLflow / Model Management & Evaluation Display
 
-- **Tracking store**: SQLite `mlflow.db` (canonical); `mlruns/` FileStore legacy.
+- **Tracking store**: SQLite `mlflow.db` (canonical); `mlruns/` FileStore legacy. In the
+  containerized deployment the MLflow **server container** (`mlflow:5000`, `file:/mlflow`) is
+  the configured tracking/registry URI (`MLFLOW_EVAL_REGISTRY_URI=http://mlflow:5000`); its
+  store is **fresh** (only the `Default` experiment, no registered model). The
+  **historical `financial_rag_pipeline` Version 7 @Production** registry entry lives on the
+  **native host `mlflow.db`** (pre-Docker runs; the host DB is `.dockerignore`d and not
+  mounted into the container).
 - **Registered model**: `financial_rag_pipeline`; **Version 7 pinned to alias @Production**
   (per `artifacts/EVALUATION_SUMMARY.md`: quality gate PASSED; judge `qwen/qwen3.6-27b`;
   25 samples; F 0.990 / R 0.920 / P 0.845 / C 0.847; scores per sample in
   `artifacts/evaluation_scores.json`). The specific MLflow run id from the legacy map
   could not be re-verified in current artifacts (**NOT VERIFIED**).
+- **Evaluation display (dashboard)** — `app/api/analytics.py::_read_evaluation_scores`
+  loads `artifacts/evaluation_scores.json` once per process (cached); on a missing/unparseable
+  file it returns zeroed scores with a warning log; `sample_count` falls back to
+  `len(samples)` when absent. The values surface via `GET /api/v1/analytics/summary`
+  (→ `eval_scores`) and the System Analytics tab (live-verified 2026-10-12: F 0.990 /
+  R 0.920 / P 0.845 / C 0.847, sample_count=25, judge `qwen/qwen3.6-27b`). The file reaches
+  the container via the `./artifacts:/app/artifacts:ro` bind mount (§23).
 - **Loading** (`src/model_loader.py`): Tier 1 cached pipeline; Tier 2
   `get_model_version_by_alias("Production")` → download `pipeline_state/config.json`
   artifact → instantiate a **fresh** `FinancialRAGPipeline` (the registered artifact is a
   provenance marker; the pipeline is a stateful service instantiated from current code).
   Tier 3 direct instantiation.
-- **KNOWN operational limitation**: `MLFLOW_EVAL_REGISTRY_URI` resolves to `mlflow.db`,
-  but `config.json` download warnings appeared on the most recent backend boot; loading is
+- **KNOWN operational limitation**: `MLFLOW_EVAL_REGISTRY_URI` resolves to the MLflow server,
+  but `config.json` download warnings appeared on recent backend boots; loading is
   effectively direct instantiation (the registry path is provenance-only). If the registry
   is unreachable the app still boots via Tier 3 (documented, non-blocking).
 - **Quality gate** (evaluation): thresholds F≥0.85 / R≥0.80 / P≥0.75 / C≥0.80; current
@@ -676,12 +776,14 @@ Key effective values (defaults used unless overridden):
 
 ## 21. Testing / Validation
 
-**Files** (`test/`): 29 files, ~495 `def test_` total. Coverage: ingestion stages (1,2)
+**Files** (`test/`): 31 files, 517 `def test_` total. Coverage: ingestion stages (1,2)
 and e2e, caching + integration, pre-retrieval, hybrid search + integration, reranker,
 table shield, cylinder reorder, post-retrieval integration, generation stage + e2e,
 pipeline orchestrator, API (endpoints, streaming, upload-parser, warmup, worker/arq,
 advanced, auth), evaluation module, streamlit ui, CORS, fiscal-year resolution, reranker
-dtype, issue regressions, phase-C batched retrieval. Shared fixture env: rate limiting
+dtype, issue regressions, phase-C batched retrieval, **analytics scores**
+(`test_analytics_scores.py`), and **upload-RBAC / security & citations**
+(`test_security_and_citations.py`). Shared fixture env: rate limiting
 disabled, stores mocked/disconnected.
 
 **Current evidence (must be stated precisely):**
@@ -696,6 +798,9 @@ disabled, stores mocked/disconnected.
 | Fiscal-year integration regression | `EXIT: PASS` (all checks; Q_exact_FY2025 → 2025; no refusal; primary model) | `scripts/_fy_integration_regression.out` |
 | FY2026 supplement repro (E2E) | retrieval→context→LLM verified; answer `$108,400M / +128.1%` with non-zero `extracted_raw_data` | `scripts/_fy26_repro.out` |
 | Fix B (fiscal_year metadata) validator | `FIXB_PASS` — chunk stored with `fiscal_year='2026'` | `scripts/_fy26_fixb_validate.py` |
+| Analytics eval-scores suite | **3 passed** (fallback shape, `sample_count` from `samples`, cache of parsed scores) | `test/test_analytics_scores.py` (2026-10-12) |
+| Upload RBAC + security/citations suite | **passed** — upload 401 anon / 403 user / 200 admin; citation-parse hardening | `test/test_security_and_citations.py` (2026-10-12) |
+| Evaluation display (live) | `GET /api/v1/analytics/summary` → `eval_scores` F 0.990 / R 0.920 / P 0.845 / C 0.847, sample_count=25, judge `qwen/qwen3.6-27b` | live API check (2026-10-12) |
 
 ---
 
@@ -734,10 +839,13 @@ mlflow_model_registry, mlflow_runs, Ingestion & Indexing.
 
 ## 23. Deployment / Runtime
 
-**Current runtime (verified 2026-09-07): fully containerized — Docker Compose project
-`financial-rag`**, launched with `docker compose up -d --build` from the repository root on
-WSL2 + Docker Desktop. The pre-container native deployment is preserved as **HISTORICAL** at the
-end of this section.
+**Current runtime (verified 2026-09-17 post-restoration): fully containerized — Docker Compose
+project `financial-rag`**, launched with `docker compose up -d --build` from the repository root
+on WSL2 + Docker Desktop. The pre-container native deployment is preserved as **HISTORICAL** at
+the end of this section. **2026-09-17 restoration:** MongoDB now bind-mounts the native
+`./mongodb_data` dbPath (`user: "1000:1000"`, daemon UID 1000); Qdrant's vectors were restored
+via a verified point-level transplant (details below) — original data preserved throughout; the
+pre-restoration native state is byte-identical in `backups/20260917_002054/`.
 
 - **Execution workflow**:
   1. `cp .env.example .env` and fill in real values (Groq keys, `JWT_SECRET_KEY`,
@@ -765,10 +873,17 @@ end of this section.
   (`database_indexer.py:126-130`) — verified live on **NVIDIA GeForce RTX 4050 Laptop GPU**
   (embedding + FP16 reranker both on `cuda`; Triton JIT compiles because `gcc`/`g++` are in the
   runtime image). Dropping the GPU block requires a code change (no CPU embedding fallback).
-- **Persistence — named volumes** (survive `docker compose down`): `mongodb_data`, `redis_data`,
-  `qdrant_storage`, `mlflow_store` + `mlflow_artifacts`, `hf_models` (embedding/reranker cache at
-  `/opt/hf`), `nltk_data`, `rag_data` (raw corpus `/app/data`; seed with
-  `docker compose cp ./data/. backend:/app/data/`), `rag_logs`.
+- **Persistence** (survives `docker compose down`): MongoDB uses a **host bind mount**
+  `./mongodb_data:/data/db` (the pre-existing native WiredTiger dbPath; daemon runs UID 1000 via
+  `user: "1000:1000"`). The backend additionally bind-mounts **`./artifacts:/app/artifacts:ro`**
+  so the dashboard can display evaluation scores (`EVALUATION_SCORES_PATH`). Everything else
+  uses named volumes — `redis_data`, `qdrant_storage`
+  (holds the transplanted 1152-vector server store), `mlflow_store` + `mlflow_artifacts`,
+  `hf_models` (embedding/reranker cache at `/opt/hf`), `nltk_data`, `rag_data` (raw corpus
+  `/app/data`; seed with `docker compose cp ./data/. backend:/app/data/`), `rag_logs`. The legacy
+  `mongodb_data` named volume remains declared but unused. Original native stores preserved:
+  `mongodb_data/` (now bind-mounted live) and `data/qdrant_db` (pristine embedded archive;
+  backup `backups/20260917_002054/`).
 - **Networks (isolated)**: `backend-net` — mongo/redis/qdrant/mlflow/backend (DB services are
   **NOT published** to the host); `frontend-net` — frontend/streamlit ↔ backend. Only `8000` and
   `3000` are published.
@@ -779,10 +894,15 @@ end of this section.
   commented out: in-memory `_INGESTION_TASKS` cannot report upload completion, §26.10).
 - **Startup sequence** (in-container): lifespan → `get_or_create_pipeline()` (MLflow Production
   alias → direct init fallback) → warm-up (embed "warmup", reranker warm, Qdrant/Mongo/Redis
-  probes) → `seed_super_admin()`. The warm-up Qdrant probe logs a **non-blocking 404** until the
-  collection exists; `financial_vectors` is created lazily on first ingestion.
-- **Live state (verified 2026-09-07)**: all 6 containers `healthy`; `GET /health` → 200
-  (`mongodb: ok`, `redis: ok`); Qdrant responds but lists zero collections (fresh deploy);
+probes) → `seed_super_admin()`. The warm-up Qdrant probe logs a **non-blocking 404** until the
+   collection exists (created lazily on first ingestion for a fresh deploy; in the current
+   restored deployment `financial_vectors` already exists with 1152 points).
+- **Live state (verified 2026-09-17 post-restoration; counts refreshed 2026-10-12)**: all 6
+  containers `healthy`; `GET /health` → 200 `{mongodb: ok, qdrant: ok, redis: ok}` with
+  `warmup_completed: true`; MongoDB `financial_rag.raw_chunks` = **1164**, `users` = **33**
+  (2 admins); Qdrant `financial_vectors` = **1152** points (exact count, status green);
+  `GET /api/v1/analytics/summary` renders the recorded eval scores
+  (F 0.990 / R 0.920 / P 0.845 / C 0.847, sample_count=25) from `artifacts/evaluation_scores.json`;
   frontend redirects `/` → `/login`.
 
 **HISTORICAL — native (pre-container) runtime.** Python 3.12.3 venv `Financial_env`; Qdrant
@@ -808,6 +928,7 @@ containerized workflow above is the default deployment.
 | Parser failure on upload | 400 (ext), error task state (ingest) |
 | Document ingest failure | task marked `failed` with error message |
 | Cross-encoder predict exception | scores `[0.0]*len(chunks)` (degrade) |
+| `evaluation_scores.json` missing / unparseable | analytics `eval_scores` zeros + `sample_count: 0` + `judge="unknown"`, warning logged (graceful) |
 | Stream cancellation | session memory persisted, stream ends without `done` |
 | Rate limit | 429 structured `RateLimitErrorResponse` with X-RateLimit headers |
 
@@ -817,14 +938,19 @@ containerized workflow above is the default deployment.
 
 - **PRODUCTION-ACTIVE (default config)**: ingestion, dual store, hybrid retrieval,
   FP16 reranking, context augmentation, generation+fallback, guardrail, cache, all API
-  layers, auth/RBAC/rate-limit/audit, SSE, session memory, multi-ticker retrieval.
+  layers, auth/RBAC/rate-limit/audit, SSE, session memory, multi-ticker retrieval, System
+  Analytics (incl. evaluation-scores display).
 - **VALIDATED (evidence)**: FP16 reranking (identical top-8, ~67% faster, VRAM measured);
   fiscal-year normalization + E2E FY2025 regression (PASS); FY2026 supplement answer
   verified E2E ($108,400M / +128.1%); Fix A (budget context) + Fix B (fiscal metadata)
-  verified (see §28); targeted unit subset 88/4 (known pre-existing failures).
+  verified (see §28); **Fix C upload RBAC (401/403/200)** + security/citations suite;
+  **analytics eval-scores display live (F 0.990 / R 0.920 / P 0.845 / C 0.847,
+  sample_count=25)**; counts refreshed 2026-10-12 (raw_chunks 1164, users 33); targeted
+  unit subset 88/4 (known pre-existing failures).
 - **BENCHMARK/HISTORICAL**: Version 7 quality gate scores (F 0.990 / R 0.920 /
   P 0.845 / C 0.847, 25 samples, judge qwen3.6-27b) — recorded in `EVALUATION_SUMMARY.md`,
-  NOT re-run against the current working tree; "447/447" full-suite claim historical.
+  NOT re-run against the current working tree (now surfaced read-only by the dashboard);
+  "447/447" full-suite claim historical.
 - **EXPERIMENTAL / OFF**: Module-3 pre-retrieval (ENABLE_PRE_RETRIEVAL=False).
 - **PLANNED**: multi-hop/agentic engine (docs/MULTI_HOP_ROADMAP.md).
 
@@ -863,6 +989,11 @@ containerized workflow above is the default deployment.
 15. **Auth endpoints unrate-limited**; dev JWT secret fallback; `x-role` cookie non-HttpOnly.
 16. **`fiscal_year='FY2026'` query filter matches nothing** — stored years are `"2026"`
     (no prefix).
+17. **Auth `EmailStr` rejects reserved-TLD addresses** — pydantic `EmailStr`
+    (`LoginRequest`/`SignupRequest`) fails with 422 for special-use TLDs such as
+    `admin@financial-rag.local` (email-validator RFC behavior), *before* any password check.
+    Use a standard email domain for `SUPERADMIN_EMAIL` (live-verified 2026-10-12: a normal
+    gmail admin address logs in with HTTP 200; only `.local`-style addresses are affected).
 
 ---
 
@@ -878,8 +1009,9 @@ containerized workflow above is the default deployment.
 
 ## 28. Recent Important Changes (verified in working tree)
 
-These are **uncommitted** working-tree changes (git HEAD `d3a39b9`, dirty status
-`M src/pipeline.py`, `M app/api/main.py`, `M config/settings.py`, etc.).
+These are **uncommitted** working-tree changes (git HEAD `1e18efc`, dirty status
+`M src/pipeline.py`, `M app/api/main.py`, `M app/api/analytics.py`, `M docker-compose.yml`,
+`M README.md`, `M PROJECT_MAP.md`, etc.).
 
 1. **Fix A — budget-aware context walk** (`src/pipeline.py::_augment_context`): the
    single-company path no longer keeps `documents[:3]`; it walks ranked docs up to the
@@ -894,7 +1026,15 @@ These are **uncommitted** working-tree changes (git HEAD `d3a39b9`, dirty status
    `_query_fiscal_year` → canonical `str`): completed earlier; 11 unit tests pass.
 4. **FP16 reranker default** (`config/settings.py` `RERANKER_DTYPE="float16"` + model
    loader `.to(dtype)` verification).
-5. Module relocations already reflected on disk: `src/2_generation/*` removed
+5. **Fix C — upload admin-gated** (`app/api/main.py::/api/v1/documents/upload` now uses
+   `Depends(require_roles(["admin"]))`); covered by `test/test_security_and_citations.py`
+   (401 anon / 403 user / 200 admin, verified live).
+6. **Fix D — evaluation display restored**: `docker-compose.yml` backend mounts
+   `./artifacts:/app/artifacts:ro`; `app/api/analytics.py::_read_evaluation_scores` reads
+   `evaluation_scores.json` and `sample_count` falls back to `len(samples)`; the System
+   Analytics tab renders the Version-7 scores live (verified 2026-10-12). Covered by
+   `test/test_analytics_scores.py` (3 tests, PASS).
+7. Module relocations already reflected on disk: `src/2_generation/*` removed
    (generation lives in `src/5_generation/`).
 
 No production/test/configuration logic was modified during this documentation task.
@@ -996,6 +1136,9 @@ Key deltas found during inspection (current code → old map):
 | `_augment_context` top-3 | old behavior | budget-aware walk (Fix A) | **Refreshed** |
 | New components | — | `streaming_json.py`, `analytics.py`, `parsers.py`, `evaluation/`, `scripts/_fy26_*`, `test_fiscal_year_resolution.py`, `test_reranker_dtype.py`, `test_cors.py`, `test_issue_regressions.py`, `test_phase_c_batched_retrieval.py`, `docs/*` audits, `results/*`, artifacts ab/ab2 | **Added** |
 | Streaming build | — | `frontend/` has no `.env`; base URL runtime-editable | **Added** |
+| `/api/v1/documents/upload` auth | optional auth (guest) | **admin-only** (`require_roles(["admin"])`, Fix C) | **Corrected** |
+| Backend artifacts access | — | `./artifacts:/app/artifacts:ro` bind mount; System Analytics renders eval scores from `evaluation_scores.json` (Fix D) | **Added** |
+| Live counts | raw_chunks 1163 / users 32 | raw_chunks **1164** / users **33** (2026-10-12) | **Refreshed** |
 
 ---
 
@@ -1003,4 +1146,9 @@ Key deltas found during inspection (current code → old map):
 is `d3a39b9`; the working tree contains uncommitted fixes (Fix A/Fix B, settings, tests)
 that this document reflects as the current system. Updated 2026-09-07: Docker Compose
 containerization (docker-compose.yml, app/Dockerfile, frontend/Dockerfile, .dockerignore,
-frontend/.dockerignore, .env.example) — all 6 services verified healthy on GPU.*
+frontend/.dockerignore, .env.example) — all 6 services verified healthy on GPU. Updated
+2026-09-18: post-restoration state — MongoDB persists via a host bind-mount of the native
+dbPath; Qdrant `financial_vectors` restored via a point-level vector transplant (1152 vectors,
+  exact counts verified 2026-09-17); stack verified healthy with `warmup_completed: true`.
+  Updated 2026-10-12: documentation accuracy refresh (TOC added; counts refreshed; Fix C
+  upload-RBAC + Fix D evaluation-display documented; EmailStr gotcha recorded).*

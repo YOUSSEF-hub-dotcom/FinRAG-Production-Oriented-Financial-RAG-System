@@ -88,6 +88,7 @@ def patch_pipeline():
 
     with (
         patch("app.api.main.FinancialRAGPipeline", return_value=mock_pipe) as mock_cls,
+        patch("app.api.main.get_or_create_pipeline", return_value=mock_pipe),
         patch.object(pymongo, "MongoClient") as mock_mongo,
         patch.object(qdrant_client, "QdrantClient") as mock_qdrant,
         patch.object(redis, "from_url") as mock_redis,
@@ -126,8 +127,23 @@ def enable_rate_limit():
 
     Restores the disabled state afterwards (baseline safety).
     """
-    r = redis.Redis(host="localhost", port=6379, db=0, socket_connect_timeout=2)
-    r.flushdb()
+    from urllib.parse import urlparse
+
+    from config.settings import REDIS_URL
+
+    parsed = urlparse(REDIS_URL)
+    _db = int((parsed.path or "/0").lstrip("/") or 0)
+    r = redis.Redis(
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 6379,
+        db=_db,
+        socket_connect_timeout=2,
+    )
+    try:
+        r.flushdb()
+    except Exception as exc:  # noqa: BLE001 -- unreachable Redis => skip, not error
+        r.close()
+        pytest.skip(f"Redis unavailable for rate-limit test: {exc}")
     previous = limiter.enabled
     limiter.enabled = True
     try:

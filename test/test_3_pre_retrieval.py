@@ -415,7 +415,8 @@ def m3_pipeline():
         cache_instance.get.return_value = None
 
         guard_instance = MockGuard.return_value
-        guard_instance.check.return_value = {"passed": True}
+        guard_instance.check.return_value = {"passed": True, "status": "passed"}
+        guard_instance.check_sync.return_value = {"passed": True, "status": "passed"}
 
         from pipeline import FinancialRAGPipeline
 

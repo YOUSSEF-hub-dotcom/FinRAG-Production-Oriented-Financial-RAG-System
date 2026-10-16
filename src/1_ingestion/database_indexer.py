@@ -9,7 +9,7 @@ Vector Storage: Qdrant — 768-dim HNSW vectors with lightweight metadata payloa
 import threading
 import time
 import uuid as _uuid
-from typing import Any
+from typing import Any, Iterator
 
 import mlflow
 import pymongo
@@ -19,6 +19,8 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    FilterSelector,
+    MatchAny,
     MatchValue,
     PointStruct,
     VectorParams,
@@ -54,6 +56,7 @@ _QDRANT_PAYLOAD_FIELDS = [
     "section",
     "doc_type",
     "contains_table",
+    "source_id",
 ]
 
 # Maximum retry attempts for database connections
@@ -342,6 +345,48 @@ class MongoDBIndexer:
         query = {"ticker": ticker} if ticker else {}
         return collection.count_documents(query)
 
+    def get_chunks_by_source_id(self, source_id: str) -> list[dict]:
+        """Return all chunk documents keyed to a logical-filing ``source_id``.
+
+        Only records that explicitly carry the (non-empty) ``source_id`` are
+        returned; unkeyed legacy records are intentionally excluded.
+        """
+        collection = self._connect()
+        return list(collection.find({"source_id": source_id}, {"_id": 0}))
+
+    def get_chunk_ids_by_source_id(self, source_id: str) -> set[str]:
+        """Return the set of chunk_ids keyed to ``source_id`` in MongoDB."""
+        collection = self._connect()
+        cursor = collection.find(
+            {"source_id": source_id}, {"_id": 0, "chunk_id": 1}
+        )
+        return {doc["chunk_id"] for doc in cursor if doc.get("chunk_id")}
+
+    def delete_stale_chunks(self, source_id: str, stale_ids: list[str]) -> int:
+        """Delete the given chunk_ids, but only within the ``source_id`` scope.
+
+        The ``source_id`` predicate guarantees a stale record belonging to a
+        different (or unkeyed) filing is never removed.
+        """
+        if not stale_ids:
+            return 0
+        collection = self._connect()
+        result = collection.delete_many(
+            {"source_id": source_id, "chunk_id": {"$in": list(stale_ids)}}
+        )
+        return result.deleted_count
+
+    def iter_all_chunks(self, batch_size: int = 1000) -> Iterator[dict]:
+        """Read-only: iterate over every chunk document (``_id`` excluded).
+
+        Used exclusively by the dry-run reconciliation utility; performs no
+        writes.
+        """
+        collection = self._connect()
+        cursor = collection.find({}, {"_id": 0}).batch_size(max(1, int(batch_size)))
+        for doc in cursor:
+            yield doc
+
     def close(self):
         """Close MongoDB connection."""
         if self._client:
@@ -465,6 +510,7 @@ class QdrantIndexer:
                 "section": metadata.get("section", "General"),
                 "doc_type": metadata.get("doc_type", "UNKNOWN"),
                 "contains_table": metadata.get("contains_table", False),
+                "source_id": metadata.get("source_id"),
             }
 
             # Convert string chunk_id to deterministic UUID for Qdrant
@@ -599,6 +645,82 @@ class QdrantIndexer:
         else:
             result = client.count(collection_name=self._collection_name)
         return result.count
+
+    def get_chunk_ids_by_source_id(self, source_id: str) -> set[str]:
+        """Return the set of chunk_ids stored in Qdrant for ``source_id``.
+
+        Only points whose payload explicitly carries the matching ``source_id``
+        are returned (legacy points without the key are excluded). Pages through
+        the scroll API so large filings are fully enumerated.
+        """
+        client = self._connect()
+        scroll_filter = Filter(
+            must=[
+                FieldCondition(key="source_id", match=MatchValue(value=source_id))
+            ]
+        )
+        ids: set[str] = set()
+        offset = None
+        while True:
+            points, offset = client.scroll(
+                collection_name=self._collection_name,
+                scroll_filter=scroll_filter,
+                limit=256,
+                with_payload=["chunk_id"],
+                with_vectors=False,
+                offset=offset,
+            )
+            for point in points:
+                chunk_id = (point.payload or {}).get("chunk_id")
+                if chunk_id:
+                    ids.add(chunk_id)
+            if offset is None:
+                break
+        return ids
+
+    def delete_stale_by_source_id(
+        self, source_id: str, stale_ids: list[str]
+    ) -> int:
+        """Delete points that are BOTH keyed to ``source_id`` AND in ``stale_ids``.
+
+        The compound filter ensures an unkeyed legacy point (or a point from a
+        different filing that happens to share a chunk_id) is never removed.
+        """
+        if not stale_ids:
+            return 0
+        client = self._connect()
+        delete_filter = Filter(
+            must=[
+                FieldCondition(key="source_id", match=MatchValue(value=source_id)),
+                FieldCondition(key="chunk_id", match=MatchAny(any=list(stale_ids))),
+            ]
+        )
+        client.delete(
+            collection_name=self._collection_name,
+            points_selector=FilterSelector(filter=delete_filter),
+        )
+        return len(stale_ids)
+
+    def iter_all_points(self, batch_size: int = 256) -> Iterator[dict]:
+        """Read-only: iterate over every Qdrant point as ``{point_id, payload}``.
+
+        Pages through the scroll API; performs no writes. Used exclusively by
+        the dry-run reconciliation utility.
+        """
+        client = self._connect()
+        offset = None
+        while True:
+            points, offset = client.scroll(
+                collection_name=self._collection_name,
+                limit=max(1, int(batch_size)),
+                with_payload=True,
+                with_vectors=False,
+                offset=offset,
+            )
+            for point in points:
+                yield {"point_id": str(point.id), "payload": point.payload or {}}
+            if offset is None:
+                break
 
     def close(self):
         """Close Qdrant connection."""

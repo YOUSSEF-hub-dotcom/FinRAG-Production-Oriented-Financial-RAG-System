@@ -36,6 +36,7 @@ from database_indexer import EmbeddingEngine, MongoDBIndexer, QdrantIndexer
 from html_table_parser import parse_sec_filing
 from hybrid_chunker import chunk_document
 from metadata_extractor import extract_metadata
+from safe_replacement import replace_source
 
 logger = get_logger("ingestion.production")
 
@@ -122,10 +123,15 @@ def main() -> None:
                 content=parsed["raw_html"],
                 chunk_text=cleaned[:2000],
                 chunk_index=0,
+                source_id=accession,
             )
             if base_meta["ticker"] != ticker or base_meta["fiscal_year"] != year:
                 raise RuntimeError(
                     f"Metadata mismatch for {ticker} {year}: got {base_meta['ticker']} {base_meta['fiscal_year']}"
+                )
+            if base_meta.get("source_id") != accession:
+                raise RuntimeError(
+                    f"source_id mismatch for {ticker} {year}: got {base_meta.get('source_id')} expected {accession}"
                 )
 
             chunks = chunk_document(
@@ -142,8 +148,15 @@ def main() -> None:
             if len(embeddings) != len(chunks):
                 raise RuntimeError(f"Embedding count {len(embeddings)} != chunk count {len(chunks)}")
 
-            mongo_count = mongo.upsert_chunks(chunks)
-            qdrant_count = qdrant.upsert_vectors(chunks, embeddings)
+            # D6-B: single shared safe-replacement path (verify writes, then
+            # delete stale scoped to this accession).
+            summary = replace_source(accession, chunks, embeddings, mongo, qdrant)
+            mongo_count = summary["mongo_present"]
+            qdrant_count = summary["qdrant_present"]
+            if not summary["converged"]:
+                raise RuntimeError(
+                    f"Convergence failure for {ticker} {year} ({accession}): {summary['unconverged']}"
+                )
 
             elapsed = time.time() - t0
             grand_total += len(chunks)

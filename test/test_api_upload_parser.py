@@ -271,13 +271,67 @@ def client(patch_pipeline_and_deps):
 
 # Need to import app after fixtures are defined
 from app.api.main import app
+from app.api.auth.dependencies import UserPrincipal, get_current_user as _auth_get_current_user
+
+
+@pytest.fixture
+def admin_client(client):
+    """Client with a synthetic admin bearer principal.
+
+    Deterministically exercises the upload route's server-side RBAC without
+    issuing real JWTs. The override targets the auth-layer
+    ``get_current_user`` that ``require_roles(...)`` depends on.
+    """
+    principal = UserPrincipal(
+        user_id="t-admin-1",
+        email="admin@test.local",
+        role="admin",
+    )
+    app.dependency_overrides[_auth_get_current_user] = lambda: principal
+    try:
+        yield client
+    finally:
+        app.dependency_overrides.pop(_auth_get_current_user, None)
+
+
+@pytest.fixture
+def user_client(client):
+    """Client with a synthetic regular-user bearer principal."""
+    principal = UserPrincipal(
+        user_id="t-user-1",
+        email="user@test.local",
+        role="user",
+    )
+    app.dependency_overrides[_auth_get_current_user] = lambda: principal
+    try:
+        yield client
+    finally:
+        app.dependency_overrides.pop(_auth_get_current_user, None)
+
+
+class TestAPIUploadAuthorization:
+
+    def test_upload_anonymous_rejected_401(self, client):
+        resp = client.post(
+            "/api/v1/documents/upload?ticker=AAPL&fiscal_year=2025",
+            files={"file": ("report.pdf", _make_test_pdf(), "application/pdf")},
+        )
+        assert resp.status_code == 401
+
+    def test_upload_regular_user_rejected_403(self, user_client):
+        resp = user_client.post(
+            "/api/v1/documents/upload?ticker=AAPL&fiscal_year=2025",
+            files={"file": ("report.pdf", _make_test_pdf(), "application/pdf")},
+        )
+        assert resp.status_code == 403
+        assert "Insufficient privileges" in resp.json()["detail"]
 
 
 class TestAPIUploadIntegration:
 
-    def test_upload_pdf_returns_200(self, client):
+    def test_upload_pdf_returns_200(self, admin_client):
         pdf_bytes = _make_test_pdf()
-        resp = client.post(
+        resp = admin_client.post(
             "/api/v1/documents/upload?ticker=AAPL&fiscal_year=2025",
             files={"file": ("report.pdf", pdf_bytes, "application/pdf")},
         )
@@ -285,9 +339,9 @@ class TestAPIUploadIntegration:
         body = resp.json()
         assert body["filename"] == "report.pdf"
 
-    def test_upload_docx_returns_200(self, client):
+    def test_upload_docx_returns_200(self, admin_client):
         docx_bytes = _make_test_docx()
-        resp = client.post(
+        resp = admin_client.post(
             "/api/v1/documents/upload?ticker=MSFT&fiscal_year=2024",
             files={"file": ("report.docx", docx_bytes, "application/docx")},
         )
@@ -295,40 +349,40 @@ class TestAPIUploadIntegration:
         body = resp.json()
         assert body["filename"] == "report.docx"
 
-    def test_upload_html_returns_200(self, client):
+    def test_upload_html_returns_200(self, admin_client):
         html_bytes = _make_test_html().encode("utf-8")
-        resp = client.post(
+        resp = admin_client.post(
             "/api/v1/documents/upload?ticker=AAPL&fiscal_year=2025",
             files={"file": ("filing.html", html_bytes, "text/html")},
         )
         assert resp.status_code == 200
 
-    def test_upload_txt_returns_200(self, client):
-        resp = client.post(
+    def test_upload_txt_returns_200(self, admin_client):
+        resp = admin_client.post(
             "/api/v1/documents/upload?ticker=AAPL&fiscal_year=2025",
             files={"file": ("filing.txt", b"Test content.", "text/plain")},
         )
         assert resp.status_code == 200
 
-    def test_upload_sgml_returns_200(self, client):
+    def test_upload_sgml_returns_200(self, admin_client):
         content = b"<DOCUMENT><TYPE>10-K\nTest SEC filing content."
-        resp = client.post(
+        resp = admin_client.post(
             "/api/v1/documents/upload?ticker=AAPL&fiscal_year=2025",
             files={"file": ("filing.sgml", content, "text/plain")},
         )
         assert resp.status_code == 200
 
-    def test_upload_unsupported_extension_returns_400(self, client):
-        resp = client.post(
+    def test_upload_unsupported_extension_returns_400(self, admin_client):
+        resp = admin_client.post(
             "/api/v1/documents/upload",
             files={"file": ("file.exe", b"data", "application/octet-stream")},
         )
         assert resp.status_code == 400
         assert "Unsupported file type" in resp.json()["detail"]
 
-    def test_upload_pdf_saves_to_data_dir(self, client):
+    def test_upload_pdf_saves_to_data_dir(self, admin_client):
         pdf_bytes = _make_test_pdf()
-        resp = client.post(
+        resp = admin_client.post(
             "/api/v1/documents/upload?ticker=TEST&fiscal_year=2024",
             files={"file": ("save_test.pdf", pdf_bytes, "application/pdf")},
         )
@@ -341,9 +395,9 @@ class TestAPIUploadIntegration:
         saved.parent.parent.rmdir()
         saved.parent.parent.parent.rmdir()
 
-    def test_upload_docx_saves_to_data_dir(self, client):
+    def test_upload_docx_saves_to_data_dir(self, admin_client):
         docx_bytes = _make_test_docx()
-        resp = client.post(
+        resp = admin_client.post(
             "/api/v1/documents/upload?ticker=TEST&fiscal_year=2024",
             files={"file": ("save_test.docx", docx_bytes, "application/docx")},
         )

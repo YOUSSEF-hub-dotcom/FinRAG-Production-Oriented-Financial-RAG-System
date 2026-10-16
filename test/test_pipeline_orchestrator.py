@@ -50,6 +50,10 @@ def _make_parsed_answer(
 
 
 def _make_qdrant_results(count: int = 3) -> list[dict]:
+    # Distinct sections per chunk: `_augment_context` de-duplicates documents
+    # that share a (ticker, section) identity, so identical sections would
+    # collapse to a single document before generation.
+    sections = ["Business Overview", "Risk Factors", "Management Discussion"]
     results = []
     for i in range(count):
         results.append({
@@ -59,7 +63,7 @@ def _make_qdrant_results(count: int = 3) -> list[dict]:
                 "chunk_id": f"chunk_{i:03d}",
                 "ticker": "AAPL",
                 "fiscal_year": "2025",
-                "section": "Business Overview",
+                "section": sections[i % len(sections)],
                 "doc_type": "10-K",
                 "contains_table": i == 2,
             },
@@ -77,7 +81,7 @@ def _make_mongo_docs(qdrant_results: list[dict]) -> dict[str, dict]:
             "chunk_type": "text",
             "ticker": "AAPL",
             "fiscal_year": "2025",
-            "section": "Business Overview",
+            "section": (r.get("payload") or {}).get("section", "Business Overview"),
         }
     return docs
 
@@ -141,16 +145,20 @@ def mock_components():
         cache_instance.get.return_value = None  # cache miss
         cache_instance.put.return_value = True
 
-        # AsyncGuardrail
+        # AsyncGuardrail (pipeline.query now uses the sync verdict path)
         guard_instance = MockGuard.return_value
-        guard_instance.check.return_value = {
+        guard_verdict = {
             "passed": True,
             "verified_claims": ["167.0"],
             "failed_claims": [],
             "final_output": "Answer verified.",
             "cache_written": True,
             "detail": "OK",
+            "status": "passed",
+            "error": None,
         }
+        guard_instance.check.return_value = guard_verdict
+        guard_instance.check_sync.return_value = guard_verdict
 
         yield {
             "embed": embed_instance,
@@ -255,8 +263,8 @@ class TestCacheMiss:
     def test_guardrail_called_for_parsed_answer(self, pipeline, mock_components):
         pipeline.query("What is Apple's revenue?")
 
-        mock_components["guardrail"].check.assert_called_once()
-        call_kwargs = mock_components["guardrail"].check.call_args[1]
+        mock_components["guardrail"].check_sync.assert_called_once()
+        call_kwargs = mock_components["guardrail"].check_sync.call_args[1]
         assert "Apple" in call_kwargs["answer"]
 
     def test_pipeline_run_id_is_generated(self, pipeline, mock_components):

@@ -56,8 +56,21 @@ _FISCAL_YEAR_FROM_CONTENT = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
-# Document type extraction
-_DOC_TYPE_FROM_PATH = re.compile(r"(10-K|10-Q|8-K|S-1|DEF\s*14A)", re.IGNORECASE)
+# Document type extraction.
+# Amendment variants (e.g. 10-K/A) are matched before their base form so an
+# amended filing keeps its own document-type identity.
+_DOC_TYPE_ALTERNATION = r"(10-K/A|10-Q/A|8-K/A|10-K|10-Q|8-K|S-1|DEF\s*14A)"
+_DOC_TYPE_FROM_PATH = re.compile(_DOC_TYPE_ALTERNATION, re.IGNORECASE)
+
+# SEC accession number extraction (stable logical-filing identity).
+# Canonical form: 10 digits - 2 digits - 6 digits, e.g. 0000320193-24-000123.
+_ACCESSION_VALUE = r"(\d{10}-\d{2}-\d{6})"
+_ACCESSION_HEADER_PATTERN = re.compile(
+    r"ACCESSION\s+NUMBER\s*:\s*" + _ACCESSION_VALUE, re.IGNORECASE
+)
+_ACCESSION_PATH_PATTERN = re.compile(
+    r"(?:^|[/\\])" + _ACCESSION_VALUE + r"(?:[/\\]|$)"
+)
 
 
 def _generate_chunk_id(ticker: str, source_file: str, index: int) -> str:
@@ -68,6 +81,34 @@ def _generate_chunk_id(ticker: str, source_file: str, index: int) -> str:
     hash_input = f"{ticker}:{source_file}:{index}"
     short_hash = hashlib.md5(hash_input.encode()).hexdigest()[:12]
     return f"{ticker}_{short_hash}_{index:04d}"
+
+
+def extract_accession(
+    file_path: str | Path | None = None, content: str = ""
+) -> str | None:
+    """
+    Extract a single validated SEC accession number for logical-filing identity.
+
+    Sources considered: the filing's directory/path (e.g. .../10-K/{accession}/...)
+    and the raw SGML header (``ACCESSION NUMBER:``). Returns the accession only
+    when exactly one distinct, well-formed value is found; returns ``None`` for
+    missing, malformed, or ambiguous (multiple distinct) values so identity is
+    never guessed.
+    """
+    candidates: set[str] = set()
+
+    if file_path is not None:
+        candidates.update(_ACCESSION_PATH_PATTERN.findall(str(file_path)))
+
+    if content:
+        candidates.update(_ACCESSION_HEADER_PATTERN.findall(content))
+
+    if len(candidates) == 1:
+        return next(iter(candidates))
+
+    if len(candidates) > 1:
+        logger.warning("Ambiguous accession numbers detected: %s", sorted(candidates))
+    return None
 
 
 def extract_ticker(file_path: str | Path, content: str = "") -> str:
@@ -161,7 +202,9 @@ def extract_doc_type(file_path: str | Path, content: str = "") -> str:
 
     # Content-based extraction (look for <TYPE> tags in SEC SGML)
     if content:
-        type_match = re.search(r"<TYPE>\s*(10-K|10-Q|8-K|S-1)", content[:5000], re.IGNORECASE)
+        type_match = re.search(
+            r"<TYPE>\s*" + _DOC_TYPE_ALTERNATION, content[:5000], re.IGNORECASE
+        )
         if type_match:
             doc_type = type_match.group(1).upper()
             logger.debug("Extracted doc type from content: %s", doc_type)
@@ -200,6 +243,7 @@ def extract_metadata(
     content: str = "",
     chunk_text: str = "",
     chunk_index: int = 0,
+    source_id: str | None = None,
 ) -> dict:
     """
     Extract the complete metadata dictionary for a filing chunk.
@@ -209,11 +253,14 @@ def extract_metadata(
         content: Raw filing content (for content-based extraction).
         chunk_text: The specific text chunk (for section + table detection).
         chunk_index: Numeric index of this chunk within the document.
+        source_id: Optional stable logical-filing identifier. When omitted, an
+            SEC accession number is extracted from the path/header if exactly one
+            validated value is present; otherwise ``source_id`` is ``None``.
 
     Returns:
         Dictionary with all mandatory metadata fields:
             ticker, fiscal_year, doc_type, source_file,
-            section, contains_table, chunk_id, page_number
+            section, contains_table, chunk_id, page_number, source_id
     """
     ticker = extract_ticker(file_path, content)
     fiscal_year = extract_fiscal_year(file_path, content)
@@ -222,12 +269,14 @@ def extract_metadata(
     section = identify_section(chunk_text) if chunk_text else "General"
     has_table = contains_table(chunk_text) if chunk_text else False
     chunk_id = _generate_chunk_id(ticker, source_file, chunk_index)
+    resolved_source_id = source_id or extract_accession(file_path, content)
 
     metadata = {
         "ticker": ticker,
         "fiscal_year": fiscal_year,
         "doc_type": doc_type,
         "source_file": source_file,
+        "source_id": resolved_source_id,
         "section": section,
         "contains_table": has_table,
         "chunk_id": chunk_id,

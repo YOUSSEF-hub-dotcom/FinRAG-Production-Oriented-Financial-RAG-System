@@ -48,7 +48,14 @@ class SourceCitation(BaseModel):
 
 
 class GuardrailStatus(BaseModel):
-    passed: bool = Field(default=True)
+    passed: bool = Field(
+        default=False,
+        description="True only on a real guardrail PASS (never fabricated).",
+    )
+    status: str = Field(
+        default="not_run",
+        description="Machine-readable verdict: passed | failed | error | not_run.",
+    )
     verified_claims: list[str] = Field(default_factory=list)
     failed_claims: list[str] = Field(default_factory=list)
     detail: str = Field(default="")
@@ -82,6 +89,13 @@ class HealthServiceStatus(BaseModel):
     mongodb: str = Field(default="unknown")
     qdrant: str = Field(default="unknown")
     redis: str = Field(default="unknown")
+    mongo_qdrant_parity: str = Field(
+        default="unknown",
+        description=(
+            "MongoDB vs Qdrant document/point count parity, e.g. "
+            "'ok (1165)' or 'drift (mongo=1165, qdrant=1160, delta=5)'."
+        ),
+    )
 
 
 class HealthCheckResponse(BaseModel):
@@ -118,13 +132,24 @@ class CacheFlushResponse(BaseModel):
 
 class PerformanceMetrics(BaseModel):
     total_queries: int = Field(default=0)
+    eligible_queries: int = Field(
+        default=0,
+        description="Events carrying a real guardrail verdict (pass-rate denominator).",
+    )
     avg_latency_ms: float = Field(default=0.0)
     avg_ttft_ms: float = Field(default=0.0)
     cache_hit_rate: float = Field(default=0.0, description="Percentage 0-100.")
-    guardrail_pass_rate: float = Field(default=0.0, description="Percentage 0-100.")
+    guardrail_pass_rate: float = Field(
+        default=0.0,
+        description="Percentage 0-100, computed over eligible (verdict-bearing) events only.",
+    )
     p50_latency_ms: float = Field(default=0.0)
     p95_latency_ms: float = Field(default=0.0)
     p99_latency_ms: float = Field(default=0.0)
+    latency_outliers_dropped: int = Field(
+        default=0,
+        description="Latency samples excluded as non-positive or implausible.",
+    )
 
 
 class EvalScores(BaseModel):
@@ -137,9 +162,9 @@ class EvalScores(BaseModel):
 
 
 class ContextQuality(BaseModel):
-    high: float = Field(default=0.0, description="Share of chunks with score > 0.8 (%).")
-    mid: float = Field(default=0.0, description="Share of chunks with score 0.5-0.8 (%).")
-    low: float = Field(default=0.0, description="Share of chunks with score < 0.5 (%).")
+    high: float = Field(default=0.0, description="Share of chunks with normalized score >= 0.66 (%).")
+    mid: float = Field(default=0.0, description="Share of chunks with normalized score 0.33-0.66 (%).")
+    low: float = Field(default=0.0, description="Share of chunks with normalized score < 0.33 (%).")
     total: int = Field(default=0)
 
 

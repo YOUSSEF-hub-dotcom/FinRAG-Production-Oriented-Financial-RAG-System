@@ -118,9 +118,17 @@ class TestArqWorkerSettings:
         assert "ingest_document_job" in names
         assert "log_audit_event_job" in names
 
-    def test_worker_settings_redis_dsn_uses_localhost(self):
-        assert WorkerSettings.redis_settings.host == "localhost"
-        assert WorkerSettings.redis_settings.port == 6379
+    def test_worker_settings_redis_dsn_matches_config(self):
+        # WorkerSettings derives its DSN from config.settings.REDIS_URL, so the
+        # host/port must match whatever URL is configured (localhost by default,
+        # a service DNS name in Docker).
+        from urllib.parse import urlparse
+
+        from config.settings import REDIS_URL
+
+        parsed = urlparse(REDIS_URL)
+        assert WorkerSettings.redis_settings.host == (parsed.hostname or "localhost")
+        assert WorkerSettings.redis_settings.port == (parsed.port or 6379)
 
     def test_worker_settings_job_bounds(self):
         assert WorkerSettings.max_jobs >= 1

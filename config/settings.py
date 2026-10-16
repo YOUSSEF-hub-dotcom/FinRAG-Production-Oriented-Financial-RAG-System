@@ -114,6 +114,15 @@ LLM_SEED: int = 42
 LLM_MAX_TOKENS: int = 2048
 LLM_HISTORY_K: int = 3
 
+# --- Guardrail (Module 5: numerical hallucination verification) ---
+# Wall-clock budget for the async (streaming) verification pass. On expiry the
+# verdict is reported as an error -- never a PASS -- and nothing is cached.
+GUARDRAIL_TIMEOUT_SECONDS: float = float(os.getenv("GUARDRAIL_TIMEOUT_SECONDS", "5.0"))
+# When true, a definite FAIL verdict replaces the returned answer with the
+# guardrail's safe fallback and clears its sources. Default false preserves the
+# existing user-visible answer while still returning/persisting the real status.
+GUARDRAIL_ENFORCE: bool = os.getenv("GUARDRAIL_ENFORCE", "false").lower() == "true"
+
 # --- Supported tickers ---
 SUPPORTED_TICKERS: list[str] = ["AAPL", "MSFT", "NVDA"]
 

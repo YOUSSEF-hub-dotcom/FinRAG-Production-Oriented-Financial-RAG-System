@@ -126,6 +126,8 @@ async def ingest_document_job(
     ticker: str,
     fiscal_year: str,
     task_id: str,
+    source_id: str | None = None,
+    doc_type: str | None = None,
 ) -> dict[str, Any]:
     """
     Arq task: run the full ingestion pipeline for an uploaded document.
@@ -141,6 +143,9 @@ async def ingest_document_job(
         ticker: Ticker the document belongs to.
         fiscal_year: Fiscal year the document belongs to.
         task_id: Short task identifier used in logs / response body.
+        source_id: Optional stable logical-filing identity (SEC accession or
+            explicit persistent id) to attach to every chunk.
+        doc_type: Optional explicit document type override (e.g. ``10-K/A``).
 
     Returns:
         Dict with ingestion outcome (chunks_created, mongo_count, qdrant_count).
@@ -148,7 +153,13 @@ async def ingest_document_job(
     from app.api.main import _ingest_document
 
     result = await asyncio.to_thread(
-        _ingest_document, Path(file_path), ticker, fiscal_year, task_id
+        _ingest_document,
+        Path(file_path),
+        ticker,
+        fiscal_year,
+        task_id,
+        source_id,
+        doc_type,
     )
     return result or {"status": "no_chunks"}
 
@@ -158,6 +169,8 @@ async def enqueue_ingestion(
     ticker: str,
     fiscal_year: str,
     task_id: str,
+    source_id: str | None = None,
+    doc_type: str | None = None,
 ) -> bool:
     """
     Enqueue a document-ingestion job on the Arq worker pool.
@@ -167,6 +180,8 @@ async def enqueue_ingestion(
         ticker: Ticker the document belongs to.
         fiscal_year: Fiscal year the document belongs to.
         task_id: Short task identifier used in logs / response body.
+        source_id: Optional stable logical-filing identity propagated to chunks.
+        doc_type: Optional explicit document type override.
 
     Returns:
         True if the job was enqueued, False on Redis/queue failure.
@@ -180,6 +195,8 @@ async def enqueue_ingestion(
                 ticker,
                 fiscal_year,
                 task_id,
+                source_id,
+                doc_type,
             )
             logger.info("Arq job enqueued: task=%s file=%s", task_id, file_path.name)
             return True

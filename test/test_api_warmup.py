@@ -35,6 +35,7 @@ def fresh_app_instance():
 
     with (
         patch("app.api.main.FinancialRAGPipeline", return_value=pipe) as mock_cls,
+        patch("app.api.main.get_or_create_pipeline", return_value=pipe),
         patch.object(pymongo, "MongoClient") as mock_mongo,
         patch.object(qdrant_client, "QdrantClient") as mock_qdrant,
         patch.object(redis, "from_url") as mock_redis,

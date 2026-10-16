@@ -41,6 +41,7 @@ for _p in (
 from app.api.main import app
 from app.api.schemas import ChatQueryResponse
 from app.api.worker import run_guardrail_background, log_metrics_background
+from app.api.auth.dependencies import UserPrincipal, get_current_user as _auth_get_current_user
 
 
 # ============================================================================
@@ -80,9 +81,12 @@ def patch_pipeline():
     mock_pipe.query_stream = mock_stream
     mock_pipe.close = MagicMock()
 
-    # Patch the pipeline construction in the lifespan
+    # Patch the pipeline construction in the lifespan. The lifespan resolves the
+    # pipeline via model_loader.get_or_create_pipeline(), so both the class and
+    # the loader entry point must be patched.
     with (
         patch("app.api.main.FinancialRAGPipeline", return_value=mock_pipe) as mock_cls,
+        patch("app.api.main.get_or_create_pipeline", return_value=mock_pipe),
         patch.object(pymongo, "MongoClient") as mock_mongo,
         patch.object(qdrant_client, "QdrantClient") as mock_qdrant,
         patch.object(redis, "from_url") as mock_redis,
@@ -105,6 +109,27 @@ def client(patch_pipeline):
     """FastAPI TestClient with mocked pipeline."""
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture
+def admin_client(client):
+    """TestClient with a synthetic admin principal.
+
+    The document-upload route is server-side RBAC-gated (``require_roles(['admin'])``),
+    so upload tests must authenticate as an admin. The override targets the
+    auth-layer ``get_current_user`` that ``require_roles(...)`` depends on,
+    mirroring ``test_api_upload_parser.py`` / ``test_security_and_citations.py``.
+    """
+    principal = UserPrincipal(
+        user_id="t-admin-1",
+        email="admin@test.local",
+        role="admin",
+    )
+    app.dependency_overrides[_auth_get_current_user] = lambda: principal
+    try:
+        yield client
+    finally:
+        app.dependency_overrides.pop(_auth_get_current_user, None)
 
 
 # ============================================================================
@@ -208,6 +233,7 @@ class TestChatEndpoint:
             ticker="AAPL",
             fiscal_year="2025",
             session_id="sess_001",
+            tickers=None,
         )
 
 
@@ -264,17 +290,17 @@ class TestStreamingEndpoint:
 
 class TestDocumentUpload:
 
-    def test_upload_valid_txt_file_returns_200(self, client):
+    def test_upload_valid_txt_file_returns_200(self, admin_client):
         content = b"<DOCUMENT><TYPE>10-K\nTest SEC filing content."
-        resp = client.post(
+        resp = admin_client.post(
             "/api/v1/documents/upload?ticker=AAPL&fiscal_year=2025",
             files={"file": ("filing.txt", content, "text/plain")},
         )
         assert resp.status_code == 200
 
-    def test_upload_returns_document_upload_schema(self, client):
+    def test_upload_returns_document_upload_schema(self, admin_client):
         content = b"SEC test data."
-        resp = client.post(
+        resp = admin_client.post(
             "/api/v1/documents/upload?ticker=AAPL&fiscal_year=2025",
             files={"file": ("test.txt", content, "text/plain")},
         )
@@ -284,9 +310,9 @@ class TestDocumentUpload:
         assert body["fiscal_year"] == "2025"
         assert "task_id" in body
 
-    def test_upload_invalid_file_extension_returns_400(self, client):
+    def test_upload_invalid_file_extension_returns_400(self, admin_client):
         content = b"some data"
-        resp = client.post(
+        resp = admin_client.post(
             "/api/v1/documents/upload",
             files={"file": ("filing.exe", content, "application/octet-stream")},
         )
@@ -294,17 +320,17 @@ class TestDocumentUpload:
         body = resp.json()
         assert "Unsupported file type" in body["detail"]
 
-    def test_upload_html_file_returns_200(self, client):
+    def test_upload_html_file_returns_200(self, admin_client):
         content = b"<html><body>test</body></html>"
-        resp = client.post(
+        resp = admin_client.post(
             "/api/v1/documents/upload",
             files={"file": ("filing.html", content, "text/html")},
         )
         assert resp.status_code == 200
 
-    def test_upload_saves_file_to_data_dir(self, client):
+    def test_upload_saves_file_to_data_dir(self, admin_client):
         content = b"SEC test data for saving."
-        resp = client.post(
+        resp = admin_client.post(
             "/api/v1/documents/upload?ticker=TEST&fiscal_year=2024",
             files={"file": ("save_test.txt", content, "text/plain")},
         )

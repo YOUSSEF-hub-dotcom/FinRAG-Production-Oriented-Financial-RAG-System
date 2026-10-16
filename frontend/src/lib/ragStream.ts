@@ -79,6 +79,7 @@ export interface StreamCallbacks {
 }
 
 import { getApiBaseUrl } from "@/lib/settings"
+import { fetchWithAuth } from "@/lib/api"
 
 export async function streamRagQuery(
   query: string,
@@ -90,7 +91,7 @@ export async function streamRagQuery(
   try {
     const payload: Record<string, unknown> = { user_query: query, ticker }
     if (sessionId) payload.session_id = sessionId
-    const res = await fetch(`${getApiBaseUrl()}/api/v1/chat/stream`, {
+    const res = await fetchWithAuth(`${getApiBaseUrl()}/api/v1/chat/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

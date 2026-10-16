@@ -273,7 +273,7 @@ def harness(tmp_path):
     pipe._mongo_indexer.get_chunks_by_ids = _mongo
 
     # Stub only the LLM call; everything else stays real.
-    def stub_generate(query, retrieved_docs, stream=False):
+    def stub_generate(query, retrieved_docs, stream=False, **kwargs):
         h.gen_calls += 1
         ticker = "ANY"
         if retrieved_docs:

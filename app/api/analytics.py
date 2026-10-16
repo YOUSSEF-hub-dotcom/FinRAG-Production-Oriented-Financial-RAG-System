@@ -25,6 +25,21 @@ from app.api.db_logger import AUDIT_COLLECTION_NAME
 
 logger = get_logger("api.analytics")
 
+# D3: any latency above this is treated as a clock/anomaly outlier (the wall
+# clock produced hour-scale values) and excluded from mean/percentile math.
+_MAX_LATENCY_MS = 600_000.0  # 10 minutes
+
+# D4: context-quality bucket cut-offs applied to the NORMALIZED score (the
+# [0,1] value produced by ``_normalize_audit_score`` on the write path), not a
+# raw cosine. Equal-width tertiles keep the distribution non-degenerate.
+_CONTEXT_HIGH_THRESHOLD = 0.66
+_CONTEXT_MID_THRESHOLD = 0.33
+
+# D2: only events that actually carry a guardrail verdict are eligible for the
+# pass-rate denominator (stream/upload events have no verdict and must not
+# dilute it).
+_ELIGIBLE_GUARDRAIL_STATUSES = ["passed", "failed"]
+
 # ---------------------------------------------------------------------------
 # MongoDB helper (lazy singleton, async client)
 # ---------------------------------------------------------------------------
@@ -89,7 +104,7 @@ def _read_evaluation_scores() -> dict[str, Any]:
             "answer_relevance": float(aggregates.get("answer_relevance", 0.0)),
             "context_precision": float(aggregates.get("context_precision", 0.0)),
             "context_recall": float(aggregates.get("context_recall", 0.0)),
-            "sample_count": int(raw.get("sample_count", 0)),
+            "sample_count": int(raw.get("sample_count", len(raw.get("samples", [])))),
             "judge_model": raw.get("judge_model", "unknown"),
         }
         _eval_scores_cache = fallback
@@ -128,6 +143,7 @@ async def get_analytics_summary(days: int = 30) -> dict[str, Any]:
     _empty = {
         "performance": {
             "total_queries": 0,
+            "eligible_queries": 0,
             "avg_latency_ms": 0.0,
             "avg_ttft_ms": 0.0,
             "cache_hit_rate": 0.0,
@@ -135,6 +151,7 @@ async def get_analytics_summary(days: int = 30) -> dict[str, Any]:
             "p50_latency_ms": 0.0,
             "p95_latency_ms": 0.0,
             "p99_latency_ms": 0.0,
+            "latency_outliers_dropped": 0,
         },
         "eval_scores": _read_evaluation_scores(),
         "context_quality": {"high": 0.0, "mid": 0.0, "low": 0.0, "total": 0},
@@ -177,6 +194,20 @@ async def get_analytics_summary(days: int = 30) -> dict[str, Any]:
                                 ]
                             }
                         },
+                        "guardrail_eligible": {
+                            "$sum": {
+                                "$cond": [
+                                    {
+                                        "$in": [
+                                            "$execution_metadata.guardrail_status",
+                                            _ELIGIBLE_GUARDRAIL_STATUSES,
+                                        ]
+                                    },
+                                    1,
+                                    0,
+                                ]
+                            }
+                        },
                         "all_latencies": {"$push": "$execution_metadata.total_latency_ms"},
                     }
                 },
@@ -191,14 +222,34 @@ async def get_analytics_summary(days: int = 30) -> dict[str, Any]:
     if results:
         agg = results[0]
         total = max(agg["total_queries"], 1)
+        eligible = int(agg.get("guardrail_eligible", 0) or 0)
+
+        # D3: drop non-positive, non-numeric, and implausible (clock-step)
+        # latencies before computing the mean/percentiles, and surface how many
+        # were excluded so the dashboard can flag data quality.
+        all_latencies = agg.get("all_latencies", []) or []
+        latencies = sorted(
+            v
+            for v in all_latencies
+            if isinstance(v, (int, float))
+            and not isinstance(v, bool)
+            and 0 < v <= _MAX_LATENCY_MS
+        )
+        dropped = sum(1 for v in all_latencies if v is not None) - len(latencies)
+
         perf_doc = {
             "total_queries": agg["total_queries"],
-            "avg_latency_ms": round(agg.get("avg_latency_ms") or 0.0, 1),
+            "eligible_queries": eligible,
+            "avg_latency_ms": round(sum(latencies) / len(latencies), 1) if latencies else 0.0,
             "avg_ttft_ms": round(agg.get("avg_ttft_ms") or 0.0, 1),
             "cache_hit_rate": round(agg["cache_hits"] / total * 100, 1),
-            "guardrail_pass_rate": round(agg["guardrail_passed"] / total * 100, 1),
+            # D2: denominator is the eligible set (events with a real verdict),
+            # never all matched events. No eligible events -> 0.0 (no div-by-zero).
+            "guardrail_pass_rate": (
+                round(agg["guardrail_passed"] / eligible * 100, 1) if eligible else 0.0
+            ),
+            "latency_outliers_dropped": dropped,
         }
-        latencies = sorted(v for v in agg.get("all_latencies", []) if v is not None)
         if latencies:
             perf_doc["p50_latency_ms"] = round(_percentile(latencies, 50), 1)
             perf_doc["p95_latency_ms"] = round(_percentile(latencies, 95), 1)
@@ -219,20 +270,39 @@ async def get_analytics_summary(days: int = 30) -> dict[str, Any]:
                 {
                     "$group": {
                         "_id": None,
-                        "high": {"$sum": {"$cond": [{"$gt": ["$retrieved_chunks.score", 0.8]}, 1, 0]}},
+                        # D4: buckets are applied to the NORMALIZED score (both
+                        # sync and stream paths write ``_normalize_audit_score``
+                        # output), using non-overlapping tertile cut-offs.
+                        "high": {
+                            "$sum": {
+                                "$cond": [
+                                    {"$gte": ["$retrieved_chunks.score", _CONTEXT_HIGH_THRESHOLD]},
+                                    1,
+                                    0,
+                                ]
+                            }
+                        },
                         "mid": {
                             "$sum": {
                                 "$cond": [
                                     {"$and": [
-                                        {"$gte": ["$retrieved_chunks.score", 0.5]},
-                                        {"$lte": ["$retrieved_chunks.score", 0.8]},
+                                        {"$gte": ["$retrieved_chunks.score", _CONTEXT_MID_THRESHOLD]},
+                                        {"$lt": ["$retrieved_chunks.score", _CONTEXT_HIGH_THRESHOLD]},
                                     ]},
                                     1,
                                     0,
                                 ]
                             }
                         },
-                        "low": {"$sum": {"$cond": [{"$lt": ["$retrieved_chunks.score", 0.5]}, 1, 0]}},
+                        "low": {
+                            "$sum": {
+                                "$cond": [
+                                    {"$lt": ["$retrieved_chunks.score", _CONTEXT_MID_THRESHOLD]},
+                                    1,
+                                    0,
+                                ]
+                            }
+                        },
                         "total": {"$sum": 1},
                     }
                 },

@@ -111,7 +111,7 @@ async function tryRefreshToken(): Promise<string | null> {
   }
 }
 
-async function fetchWithAuth(
+export async function fetchWithAuth(
   url: string,
   options: RequestInit = {}
 ): Promise<Response> {

@@ -80,6 +80,18 @@ _TABLE_PLACEHOLDER_RE = re.compile(r"%%TABLE_(\d+)%%")
 _TABLE_FRAGMENT_RE = re.compile(r"%%TABLE_[0-9_]*")
 _INLINE_TABLE_MARKER_RE = re.compile(r"\[\s*TABLE\s+\d+\s*\]")
 
+# D3: durations use the monotonic clock and are clamped so a wall-clock step
+# can never persist a negative or hour-scale latency to MLflow/audit.
+_MAX_LATENCY_MS = 600_000.0  # 10 minutes
+
+
+def _elapsed_ms(start: float) -> float:
+    """Clamped elapsed milliseconds since a ``perf_counter()`` mark."""
+    elapsed = (time.perf_counter() - start) * 1000
+    if elapsed < 0:
+        return 0.0
+    return elapsed if elapsed <= _MAX_LATENCY_MS else _MAX_LATENCY_MS
+
 
 def _strip_internal_markers(text: str) -> str:
     """Remove internal parser/inline table markers from user-visible strings.
@@ -1637,7 +1649,7 @@ class FinancialRAGPipeline:
             ConsolidatedFinancialAnswer dict with validated JSON response.
         """
         pipeline_run_id = str(uuid.uuid4())[:8]
-        t_start = time.time()
+        t_start = time.perf_counter()
 
         logger.info(
             "Pipeline query started: id=%s ticker=%s year=%s",
@@ -1661,18 +1673,32 @@ class FinancialRAGPipeline:
 
         result: dict[str, Any] | None = None
         started_guardrail = False
+        guardrail_result: dict[str, Any] | None = None
+        # Per-request grounded context (filled after retrieval for source citations).
+        _retrieved_context: list[dict] = []
         try:
             # Step 1: Cache check
             if self._enable_cache and self._cache is not None:
                 cached = self._cache.get(
                     user_query, ticker=ticker, fiscal_year=fiscal_year
                 )
+                # D1b: never serve an entry the guardrail did not verify. A
+                # missing / False ``guardrail_passed`` means the entry was not
+                # written by a real PASS, so treat it as a miss and re-run the
+                # full pipeline (which re-verifies before any future write).
+                if cached is not None and cached.get("guardrail_passed") is not True:
+                    logger.warning(
+                        "Cache entry ignored (guardrail_passed=%r) for id=%s",
+                        cached.get("guardrail_passed"),
+                        pipeline_run_id,
+                    )
+                    cached = None
                 if cached is not None:
                     logger.info("Cache HIT for pipeline query (id=%s)", pipeline_run_id)
                     if mlflow_active:
                         try:
                             mlflow.log_metric("cache_hit", 1)
-                            mlflow.log_metric("e2e_latency_ms", round((time.time() - t_start) * 1000, 2))
+                            mlflow.log_metric("e2e_latency_ms", round(_elapsed_ms(t_start), 2))
                         except Exception:
                             pass
                     result = {
@@ -1683,6 +1709,11 @@ class FinancialRAGPipeline:
                         "ttft_ms": 0,
                         "cache_hit": True,
                         "pipeline_run_id": pipeline_run_id,
+                        # Only verified answers are cached (enforced above), so
+                        # a served hit carries a real PASS verdict from write
+                        # time rather than a fabricated default.
+                        "guardrail_status": "passed",
+                        "guardrail_passed": True,
                     }
                     try:
                         from schemas import ConsolidatedFinancialAnswer
@@ -1708,6 +1739,13 @@ class FinancialRAGPipeline:
                 bool(t) and t.upper() == "ALL" for t in (tickers or [])
             )
 
+            # Memory-coreference resolution only runs on the legacy
+            # (pre-retrieval-disabled) path below; initialise the resolved
+            # generation scope here so the pre-retrieval path never references
+            # these before assignment.
+            resolved_ticker: str | None = None
+            inherited_year: str | None = None
+
             if self._enable_pre_retrieval and self._pre_retrieval is not None:
                 pr = self._pre_retrieval.process(user_query, history=self._get_conversation_history())
 
@@ -1725,7 +1763,7 @@ class FinancialRAGPipeline:
                             mlflow.log_metric("cache_hit", 0)
                             mlflow.log_metric(
                                 "e2e_latency_ms",
-                                round((time.time() - t_start) * 1000, 2),
+                                round(_elapsed_ms(t_start), 2),
                             )
                         except Exception:
                             pass
@@ -1750,7 +1788,7 @@ class FinancialRAGPipeline:
                 else:
                     # Route 3: REWRITE -- expanded queries + metadata pre-filter
                     pr_route = "REWRITE"
-                    t_retrieve = time.time()
+                    t_retrieve = time.perf_counter()
                     # Issue 3: comparison/multi-company queries must never be
                     # scoped to a single ticker -- strip ticker keys first.
                     pr_scope = self._apply_cross_ticker_bypass(
@@ -1775,14 +1813,14 @@ class FinancialRAGPipeline:
                         documents = self._retrieve_documents_multi(
                             pr.queries, pr.embeddings, pr_scope, top_k
                         )
-                    retrieval_ms = (time.time() - t_retrieve) * 1000
+                    retrieval_ms = _elapsed_ms(t_retrieve)
             else:
                 # Legacy flow (pre-retrieval disabled). On the hybrid path use
                 # the explicit args when given; otherwise ground the company and
                 # fiscal year from the question text so the dense/BM25 candidate
                 # pool and the supplementary-table injection stay scoped to the
                 # filing the query is actually about.
-                t_retrieve = time.time()
+                t_retrieve = time.perf_counter()
 
                 # Single-company coreference for follow-up turns ("first
                 # company", "what about the third company?", "what is its
@@ -1892,7 +1930,7 @@ class FinancialRAGPipeline:
                             top_k=top_k,
                             tickers=multi_list,
                         )
-                retrieval_ms = (time.time() - t_retrieve) * 1000
+                retrieval_ms = _elapsed_ms(t_retrieve)
 
             if not documents and pr_route != "GENERAL":
                 logger.warning("No documents retrieved for query (id=%s)", pipeline_run_id)
@@ -1901,7 +1939,7 @@ class FinancialRAGPipeline:
                         mlflow.log_metric("documents_retrieved", 0)
                         mlflow.log_metric("retrieval_ms", round(retrieval_ms, 2))
                         mlflow.log_metric("cache_hit", 0)
-                        mlflow.log_metric("e2e_latency_ms", round((time.time() - t_start) * 1000, 2))
+                        mlflow.log_metric("e2e_latency_ms", round(_elapsed_ms(t_start), 2))
                     except Exception:
                         pass
                 result = {
@@ -1926,6 +1964,20 @@ class FinancialRAGPipeline:
             # Module 6 tracing: capture the raw post-retrieval chunks fed to
             # the LLM so the offline evaluation BatchRunner can score them.
             self._last_contexts = list(documents)
+            # Per-request grounded context surfaced to the API layer so source
+            # citations always reference the chunks retrieved for this exact call.
+            _retrieved_context = [
+                {
+                    "chunk_id": str(doc.get("chunk_id") or ""),
+                    "score": float(doc.get("score") or 0.0),
+                    "payload": {
+                        **(doc.get("metadata") or {}),
+                        "text": doc.get("text", ""),
+                        "raw_text": doc.get("text", ""),
+                    },
+                }
+                for doc in documents
+            ]
 
             # Step 3: Format XML context
             context_xml = format_context_xml(documents)
@@ -1944,7 +1996,7 @@ class FinancialRAGPipeline:
                 multi_ticker=self._has_multi_ticker_intent(user_query) or all_companies,
             )
 
-            total_ms = (time.time() - t_start) * 1000
+            total_ms = _elapsed_ms(t_start)
 
             # Step 5: Background guardrail + cache write (skip cache for fallback/invalid answers)
             parsed_answer = gen_result.get("parsed")
@@ -1956,56 +2008,42 @@ class FinancialRAGPipeline:
             skip_cache = (not is_valid_answer) or skip_cache_override
 
             # Guardrail runs only on retrieved-financial flows (not chitchat).
-            if (
-                parsed_answer is not None
-                and self._enable_guardrail
+            # ``guardrail_expected`` marks routes where verification is REQUIRED
+            # (guardrail enabled + non-GENERAL). If such a route yields no
+            # parseable structured answer the guardrail cannot run, so we report
+            # a non-PASS status ("error") -- never "not_run"/PASS -- and let
+            # opt-in enforcement withhold the unverified answer.
+            guardrail_expected = (
+                self._enable_guardrail
                 and self._guardrail is not None
                 and pr_route != "GENERAL"
-            ):
+            )
+            if parsed_answer is not None and guardrail_expected:
                 started_guardrail = True
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.ensure_future(
-                            self._guardrail.check(
-                                query=user_query,
-                                answer=parsed_answer.answer,
-                                extracted_raw_data=parsed_answer.extracted_raw_data,
-                                parsed_output=parsed_answer,
-                                skip_cache=skip_cache,
-                                ticker=ticker,
-                                fiscal_year=fiscal_year,
-                            )
-                        )
-                    else:
-                        loop.run_until_complete(
-                            self._guardrail.check(
-                                query=user_query,
-                                answer=parsed_answer.answer,
-                                extracted_raw_data=parsed_answer.extracted_raw_data,
-                                parsed_output=parsed_answer,
-                                skip_cache=skip_cache,
-                                ticker=ticker,
-                                fiscal_year=fiscal_year,
-                            )
-                        )
-                except RuntimeError:
-                    try:
-                        asyncio.run(
-                            self._guardrail.check(
-                                query=user_query,
-                                answer=parsed_answer.answer,
-                                extracted_raw_data=parsed_answer.extracted_raw_data,
-                                parsed_output=parsed_answer,
-                                skip_cache=skip_cache,
-                                ticker=ticker,
-                                fiscal_year=fiscal_year,
-                            )
-                        )
-                    except Exception as exc:
-                        logger.warning("Guardrail check failed (non-blocking): %s", exc)
+                    # D1: run the guardrail synchronously and KEEP the verdict.
+                    # The check is CPU-bound regex work; the previous
+                    # fire-and-forget ``asyncio.ensure_future`` discarded the
+                    # result, so the API could only fabricate "passed".
+                    guardrail_result = self._guardrail.check_sync(
+                        query=user_query,
+                        answer=parsed_answer.answer,
+                        extracted_raw_data=parsed_answer.extracted_raw_data,
+                        parsed_output=parsed_answer,
+                        skip_cache=skip_cache,
+                        ticker=ticker,
+                        fiscal_year=fiscal_year,
+                    )
                 except Exception as exc:
                     logger.warning("Guardrail check failed (non-blocking): %s", exc)
+                    guardrail_result = {
+                        "passed": False,
+                        "status": "error",
+                        "error": str(exc),
+                        "final_output": parsed_answer.answer,
+                        "verified_claims": [],
+                        "failed_claims": [],
+                    }
 
             # Step 6: MLflow logging
             if mlflow_active:
@@ -2025,7 +2063,37 @@ class FinancialRAGPipeline:
                 **gen_result,
                 "cache_hit": False,
                 "pipeline_run_id": pipeline_run_id,
+                # D1: propagate the real verdict (or an explicit "not_run"
+                # when the guardrail did not execute) instead of leaving the
+                # API to default to a fabricated PASS.
+                "guardrail_status": (
+                    guardrail_result.get("status", "error")
+                    if guardrail_result is not None
+                    else ("error" if guardrail_expected else "not_run")
+                ),
+                "guardrail_passed": (
+                    bool(guardrail_result.get("passed", False))
+                    if guardrail_result is not None
+                    else False
+                ),
+                "guardrail_final_output": (
+                    guardrail_result.get("final_output")
+                    if guardrail_result is not None
+                    else None
+                ),
+                "guardrail_verified_claims": (
+                    guardrail_result.get("verified_claims", [])
+                    if guardrail_result is not None
+                    else []
+                ),
+                "guardrail_failed_claims": (
+                    guardrail_result.get("failed_claims", [])
+                    if guardrail_result is not None
+                    else []
+                ),
             }
+            if _retrieved_context:
+                result["retrieved_chunks"] = _retrieved_context
             return result
 
         finally:
@@ -2043,12 +2111,16 @@ class FinancialRAGPipeline:
         session_id: Optional[str] = None,
         top_k: int = 3,
         tickers: Optional[list[str]] = None,
+        context_sink: Optional[list] = None,
+        guardrail_sink: Optional[dict] = None,
     ) -> AsyncIterator[str]:
         """
         Streaming RAG query — yields LLM tokens as they arrive.
 
         Executes retrieval synchronously, then streams tokens from the LLM.
-        Guardrail verification runs in the background after streaming completes.
+        The guardrail verdict is computed after the answer has been streamed
+        (it cannot retroactively block tokens already sent to the client) and is
+        published through ``guardrail_sink`` for the caller's audit trail.
 
         Args:
             user_query: Natural language financial question.
@@ -2056,6 +2128,15 @@ class FinancialRAGPipeline:
             fiscal_year: Optional fiscal year filter.
             session_id: Optional session identifier.
             top_k: Number of documents to retrieve.
+            context_sink: Optional caller-owned list. When provided, the exact
+                {chunk_id, score, payload} context that was retrieved/grounded
+                for THIS call is written into it (in place) after retrieval, so
+                callers can build per-request citations without depending on the
+                shared ``_last_contexts`` slot (which other requests may rewrite).
+            guardrail_sink: Optional caller-owned dict. When provided, the real
+                guardrail verdict (passed / status / error / claims) for this
+                stream is written into it (in place) so the audit trace records
+                the true status instead of a fabricated PASS.
 
         Yields:
             Individual token strings from the LLM response.
@@ -2070,6 +2151,10 @@ class FinancialRAGPipeline:
         all_companies = (bool(ticker) and ticker.upper() == "ALL") or any(
             bool(t) and t.upper() == "ALL" for t in (tickers or [])
         )
+        # See query(): initialise the resolved generation scope for the
+        # pre-retrieval path (memory coreference only runs on the legacy path).
+        resolved_ticker: str | None = None
+        inherited_year: str | None = None
         if self._enable_pre_retrieval and self._pre_retrieval is not None:
             pr = self._pre_retrieval.process(user_query, history=self._get_conversation_history())
             if not pr.is_safe:
@@ -2212,7 +2297,7 @@ class FinancialRAGPipeline:
         # SSE ``sources`` event from this store) using the same
         # {chunk_id, score, payload{...}} shape the sync query() consumers
         # expect, so citation strings map back to real chunk text.
-        self._last_contexts = [
+        _context_docs = [
             {
                 "chunk_id": str(doc.get("chunk_id") or ""),
                 "score": float(doc.get("score") or 0.0),
@@ -2224,6 +2309,9 @@ class FinancialRAGPipeline:
             }
             for doc in documents
         ]
+        self._last_contexts = _context_docs
+        if context_sink is not None:
+            context_sink[:] = _context_docs
 
         # Stream tokens from generator (ditto sync: make the resolved company/year
         # explicit so the LLM doesn't refuse a coreferential follow-up question).
@@ -2239,26 +2327,44 @@ class FinancialRAGPipeline:
             full_response_parts.append(token)
             yield token
 
-        # Step 3: Background guardrail after streaming completes
+        # Step 3: Guardrail after streaming completes. Tokens have already been
+        # yielded to the client, so this cannot block them; we AWAIT the verdict
+        # (rather than fire-and-forget) so the real status is available to the
+        # caller's audit via ``guardrail_sink`` before the stream ends.
         full_response = "".join(full_response_parts)
         if self._enable_guardrail and self._guardrail is not None and pr_route != "GENERAL":
             try:
                 parsed = self._generator._parse_json_output(full_response)
                 if parsed is not None:
                     skip_cache = "not available" in parsed.answer.lower()
-                    asyncio.ensure_future(
-                        self._guardrail.check(
-                            query=user_query,
-                            answer=parsed.answer,
-                            extracted_raw_data=parsed.extracted_raw_data,
-                            parsed_output=parsed,
-                            skip_cache=skip_cache,
-                            ticker=ticker,
-                            fiscal_year=fiscal_year,
-                        )
+                    stream_verdict = await self._guardrail.check(
+                        query=user_query,
+                        answer=parsed.answer,
+                        extracted_raw_data=parsed.extracted_raw_data,
+                        parsed_output=parsed,
+                        skip_cache=skip_cache,
+                        ticker=ticker,
+                        fiscal_year=fiscal_year,
                     )
+                    if guardrail_sink is not None:
+                        guardrail_sink.update(stream_verdict)
+                elif guardrail_sink is not None:
+                    # Verification is REQUIRED on this route but no parseable
+                    # structured answer exists, so the guardrail could not run.
+                    # Report a non-PASS status ("error") -- never not_run/PASS --
+                    # so opt-in enforcement withholds the unverified answer.
+                    guardrail_sink.update({"passed": False, "status": "error"})
             except Exception as exc:
                 logger.warning("Stream guardrail check failed (non-blocking): %s", exc)
+                if guardrail_sink is not None:
+                    guardrail_sink.update(
+                        {"passed": False, "status": "error", "error": str(exc)}
+                    )
+        elif guardrail_sink is not None:
+            # Guardrail intentionally skipped (disabled or GENERAL route): record
+            # that explicitly so the audit never implies a PASS.
+            guardrail_sink.setdefault("passed", False)
+            guardrail_sink.setdefault("status", "not_run")
 
         logger.info("Stream complete: %d tokens", len(full_response_parts))
 

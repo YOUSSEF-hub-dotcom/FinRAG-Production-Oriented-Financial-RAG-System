@@ -214,7 +214,7 @@ def _build_harness(tmp_path, *, enable_pre_retrieval, enable_hybrid, enable_post
     # _augment_context (filing-table injection) is not part of the
     # post-retrieval contract under test; pin it to identity so assertions
     # observe exactly the rerank/shield/cylinder output.
-    pipe._augment_context = lambda documents, query: documents
+    pipe._augment_context = lambda documents, query, all_companies=False: documents
 
     if enable_pre_retrieval:
         pipe._pre_retrieval = PreRetrievalOrchestrator(
@@ -229,7 +229,7 @@ def _build_harness(tmp_path, *, enable_pre_retrieval, enable_hybrid, enable_post
         ]
 
     # ---- Stub the generator ----
-    def stub_generate(query, retrieved_docs, stream=False):
+    def stub_generate(query, retrieved_docs, stream=False, **kwargs):
         h.gen_calls += 1
         h.last_retrieved = list(retrieved_docs or [])
         n = len(h.last_retrieved)

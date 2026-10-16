@@ -189,6 +189,19 @@ class ConversationMemory:
     def add_ai(self, content: str) -> None:
         self._messages.append(AIMessage(content=content))
 
+    def replace_last_ai(self, content: str) -> None:
+        """Replace the most recent assistant turn's content in place.
+
+        Used to redact an unverified generated answer from conversational
+        memory when guardrail enforcement replaces the delivered response.
+        Appends a new assistant turn if none exists yet.
+        """
+        for i in range(len(self._messages) - 1, -1, -1):
+            if isinstance(self._messages[i], AIMessage):
+                self._messages[i] = AIMessage(content=content)
+                return
+        self._messages.append(AIMessage(content=content))
+
     def set_system(self, content: str) -> None:
         """Prepend or replace the system message."""
         if self._messages and isinstance(self._messages[0], SystemMessage):

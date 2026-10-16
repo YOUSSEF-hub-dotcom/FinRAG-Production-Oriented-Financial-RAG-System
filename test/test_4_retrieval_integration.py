@@ -306,7 +306,7 @@ def _build_harness(tmp_path, *, enable_pre_retrieval, enable_hybrid_retrieval):
         pipe._hybrid_search.asearch = _asearch
 
     # Stub only the LLM call; everything else stays real.
-    def stub_generate(query, retrieved_docs, stream=False):
+    def stub_generate(query, retrieved_docs, stream=False, **kwargs):
         h.gen_calls += 1
         h.last_retrieved = list(retrieved_docs or [])
         ticker, year, figure = "ANY", "2024", "1000"

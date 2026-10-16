@@ -333,6 +333,20 @@ def test_guardrail_pass_no_numbers():
     logger.info("Guardrail no numbers: OK")
 
 
+def test_guardrail_trailing_punctuation_not_spurious_failure():
+    """D8: a year/number at sentence end must not become a failed claim."""
+    import asyncio
+
+    answer = "Microsoft reported Total Revenue of $281,724 million for fiscal year 2025."
+    raw = "Total revenue was $281,724 million in fiscal year 2025"
+
+    passed, verified, failed = asyncio.run(verify_numerical_claims(answer, raw))
+    assert passed is True, f"Expected pass, got failed={failed}"
+    assert failed == [], f"Expected no failed claims, got {failed}"
+    assert any("2025" in v for v in verified)
+    logger.info("Guardrail D8 trailing punctuation: verified=%s", verified)
+
+
 # ============================================================================
 # TEST 6: Semantic Cache
 # ============================================================================

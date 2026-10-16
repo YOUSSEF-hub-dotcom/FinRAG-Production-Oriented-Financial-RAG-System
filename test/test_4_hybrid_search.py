@@ -356,6 +356,7 @@ class TestBalancedRRF:
                 "rrf_score",
                 "dense_score",
                 "sparse_score",
+                "rescued_table",
             }
             assert {"ticker", "fiscal_year", "section"} <= set(chunk["metadata"])
 
